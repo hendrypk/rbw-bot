@@ -1,6 +1,6 @@
 """
 ======================================================================
-🤖 BOT TELEGRAM: LAPORAN KEUANGAN, REKAP PENJUALAN & GRAFIK LENGKAP
+🤖 BOT TELEGRAM: LAPORAN KEUANGAN, REKAP PENJUALAN & ANALISIS KLEDO
 ======================================================================
 """
 
@@ -8,7 +8,9 @@ import os
 import json
 import logging
 import io
+import requests
 from datetime import datetime, timedelta
+from collections import Counter
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -26,8 +28,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- SISTEM PENYIMPANAN DATA (JSON) ---
+# --- KONFIGURASI API KLEDO & DATA ---
 DATA_FILE = "data.json"
+API_HOST = os.getenv("KLEDO_BASE_HOST", "http://rotibakarwisuda.api.kledo.com/api/v1")
+X_APP = os.getenv("X_APP", "finance")
+EMAIL = os.getenv("KLEDO_EMAIL")
+PASSWORD = os.getenv("KLEDO_PASSWORD")
 
 default_financial_data = {
     "date": "17 Aug 26",
@@ -49,7 +55,7 @@ default_financial_data = {
         "gofood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "seabank"},
         "grabfood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "jago"},
     },
-    "history": {}  # Format: {"17 Aug 26": {"balance": {...}, "sales": {...}}}
+    "history": {}
 }
 
 def load_data():
@@ -80,14 +86,82 @@ def save_data():
 financial_data = load_data()
 
 
-# --- FUNGSI HELPER ---
+# --- FUNGSI INTEGRASI KLEDO ---
+def create_kledo_session():
+    session = requests.Session()
+    payload = {
+        "email": EMAIL,
+        "password": PASSWORD,
+        "remember_me": 1,
+        "is_otp": 0,
+        "use_jwt": 0,
+        "include_init": 1,
+        "apple_identity_token": None
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "app-client": "web",
+        "X-App": X_APP
+    }
+    try:
+        response = session.post(f"{API_HOST}/authentication/singleLogin", json=payload, headers=headers)
+        response.raise_for_status()
+        return session
+    except Exception as e:
+        logging.error(f"Kledo Login Error: {e}")
+        return None
+
+def run_kledo_analysis():
+    session = create_kledo_session()
+    if not session:
+        return "❌ Gagal login ke Kledo. Periksa kembali email/password di .env!"
+    
+    url = f"{API_HOST}/finance/invoices?date_from=2026-08-01&date_to=2026-08-30&per_page=100"
+    try:
+        resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP})
+        resp.raise_for_status()
+        data = resp.json().get("data", {}).get("data", [])
+        
+        if not data:
+            return "⚠️ Tidak ada data invoice ditemukan dalam rentang tanggal tersebut."
+        
+        hour_list = []
+        for inv in data:
+            created_at = (
+                inv.get("created_at")
+                or inv.get("log", {}).get("action", {}).get("created_at")
+                or inv.get("trans_date")
+            )
+            if created_at:
+                try:
+                    if " " in created_at:
+                        dt_str = created_at[:19]
+                        fmt = "%Y-%m-%d %H:%M:%S" if len(dt_str) == 19 else "%Y-%m-%d %H:%M"
+                        dt = datetime.strptime(dt_str, fmt)
+                        hour_list.append(dt.hour)
+                except ValueError:
+                    continue
+        
+        counts = Counter(hour_list).most_common()
+        report = "📊 **PEAK HOURS ANALYTICS (KLEDO)**\n\n"
+        if counts:
+            for h, c in sorted(counts):
+                report += f"├ Jam {h:02d}:00 ➔ {c} Transaksi\n"
+        else:
+            report += "⚠️ Belum ada data jam transaksi spesifik yang valid."
+        return report
+    except Exception as e:
+        return f"❌ Error saat mengambil data Kledo: {e}"
+
+
+# --- FUNGSI HELPER & KEYBOARD ---
 def parse_wallet_key(query):
     query = query.lower().strip()
     if "seabank" in query: return "seabank"
     if "jago" in query: return "jago"
     if "cash" in query or "tunai" in query: return "cash_tunai"
     return None
-
 
 def generate_report_text():
     total_efektif = financial_data["seabank"] + financial_data["jago"] + financial_data["cash_tunai"]
@@ -142,18 +216,19 @@ def generate_report_text():
 =================================="""
     return text.replace(",", ".")
 
-
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Lihat Laporan", callback_data="view_report")],
         [InlineKeyboardButton("📊 Menu Grafik", callback_data="menu_chart")],
+        [InlineKeyboardButton("🔍 Analyze Peak Hours", callback_data="kledo_analysis")],
+        [InlineKeyboardButton("🔄 Transfer Saldo", callback_data="transfer_info")],
         [InlineKeyboardButton("📖 Cara Pakai", callback_data="help_menu")],
     ])
 
 
 # --- HANDLER: Perintah Teks (Command) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_msg = "🤖 **BOT LAPORAN KEUANGAN HARIAN**\n\nSilakan pilih menu di bawah ini:"
+    welcome_msg = "🤖 **BOT KEUANGAN & ANALISIS**\n\nSilakan pilih menu di bawah ini:"
     if update.message:
         await update.message.reply_text(welcome_msg, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     elif update.callback_query:
@@ -161,10 +236,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await query.edit_message_text(welcome_msg, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
-
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(generate_report_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
-
 
 async def set_efektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -181,7 +254,6 @@ async def set_efektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Format salah!\nContoh: `/se Seabank 800000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-
 async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(context.args) < 2: raise ValueError
@@ -196,7 +268,6 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Nama alokasi `{nama}` tidak ditemukan.", parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Format salah!\nContoh: `/sne \"Gaji Akmal\" 100000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
-
 
 async def set_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -228,7 +299,6 @@ async def set_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Format salah!\nContoh: `/sales offline 15 25 750000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-
 async def set_channel_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(context.args) < 2: raise ValueError
@@ -246,7 +316,6 @@ async def set_channel_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Format salah!\nContoh: `/setchannel offline seabank`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-
 async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         tanggal_baru = " ".join(context.args)
@@ -255,7 +324,6 @@ async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Tanggal aktif diubah ke: **{tanggal_baru}**", parse_mode="Markdown", reply_markup=get_main_keyboard())
     else:
         await update.message.reply_text("⚠️ Format salah!\nContoh: `/resetdate 17 Aug 26`", parse_mode="Markdown", reply_markup=get_main_keyboard())
-
 
 async def save_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -370,7 +438,6 @@ async def generate_and_send_chart(update_or_query, context, target, start_date=N
         else:
             await update_or_query.edit_message_text(msg, parse_mode="Markdown")
 
-
 async def send_chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -380,7 +447,6 @@ async def send_chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         target = args[0].lower()
         start_date, end_date = None, None
-        
         args_text = " ".join(args[1:]).strip()
 
         if args_text:
@@ -456,7 +522,6 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if errors: response_text += "⚠️ **Gagal:**\n" + "\n".join(errors)
     await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args_text = " ".join(context.args)
@@ -504,7 +569,7 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Format salah! Contoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
-# --- HANDLER: Tombol Interaktif ---
+# --- HANDLER: Tombol Interaktif (Callback Query) ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -542,6 +607,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "chart_sales_nota":
         await generate_and_send_chart(query, context, "sales_nota")
         
+    elif data == "kledo_analysis":
+        await query.edit_message_text("⏳ Sedang menyambungkan ke Kledo & menganalisis data...", parse_mode="Markdown")
+        result_text = run_kledo_analysis()
+        keyboard = [[InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]]
+        await query.edit_message_text(result_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "transfer_info":
+        help_tf = (
+            "🔄 **MENU TRANSFER SALDO**\n\n"
+            "Untuk melakukan transfer, gunakan perintah berikut di chat:\n\n"
+            "`/tf <sumber> to <tujuan> <nominal>`\n\n"
+            "**Contoh:**\n"
+            "`/tf seabank to jago 500000`\n\n"
+            "Akun yang tersedia: Seabank, Jago, Cash, atau nama alokasi Anda."
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]]
+        await query.edit_message_text(help_tf, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
     elif data == "help_menu":
         help_text = (
             "🤖 **CARA PAKAI BOT**\n\n"
@@ -554,6 +637,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/resetdate 17 Aug 26` : Ubah tanggal aktif.\n"
             "• `/save all` : Simpan/timpa arsip tanggal.\n"
             "• `/chart balance \"this week\"` : Lihat grafik interaktif.\n"
+            "• `/kledo` : Analisis jam ramai langsung via chat.\n"
         )
         keyboard = [[InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]]
         await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -588,13 +672,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ **Penyimpanan arsip dibatalkan.**", parse_mode="Markdown")
 
 
+# Command khusus untuk trigger analisis kledo lewat chat text (/kledo)
+async def kledo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Sedang menyambungkan ke Kledo & menganalisis data...")
+    result_text = run_kledo_analysis()
+    await update.message.reply_text(result_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+
 # --- MAIN FUNCTION ---
 def main():
     TOKEN = os.getenv("TELEGRAM_TOKEN")
-    if not TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan!")
+    if not TOKEN: 
+        raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di file .env!")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Daftarkan seluruh Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("se", set_efektif))
@@ -607,9 +700,10 @@ def main():
     app.add_handler(CommandHandler("setchannel", set_channel_wallet))
     app.add_handler(CommandHandler("save", save_archive_command))
     app.add_handler(CommandHandler("chart", send_chart_command))
+    app.add_handler(CommandHandler("kledo", kledo_command))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("🤖 Bot Telegram Laporan Keuangan sedang berjalan...")
+    print("🤖 Bot Telegram Keuangan & Analisis Kledo sedang berjalan...")
     app.run_polling()
 
 
