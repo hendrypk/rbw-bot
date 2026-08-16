@@ -546,6 +546,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = (
             "🤖 **CARA PAKAI BOT**\n\n"
             "• `/report` : Laporan harian.\n"
+            "• `/se <nama> <nominal>` : Update saldo efektif.\n"
+            "• `/sne <nama> <nominal>` : Update saldo alokasi.\n"
+            "• `/tf <sumber> [to/ke] <tujuan> <nominal>` : Transfer dana.\n"
+            "• `/sales <channel> <nota> <porsi> <rupiah>` : Rekap penjualan.\n"
+            "• `/bulk` : Update banyak saldo (Baris baru).\n"
             "• `/resetdate 17 Aug 26` : Ubah tanggal aktif.\n"
             "• `/save all` : Simpan/timpa arsip tanggal.\n"
             "• `/chart balance \"this week\"` : Lihat grafik interaktif.\n"
