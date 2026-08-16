@@ -305,6 +305,119 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
+async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format input:
+    /tf <sumber> <tujuan> <nominal>
+    Contoh: /tf seabank jago 500000
+    Contoh: /tf cash "gaji akmal" 100000
+    Contoh: /tf seabank saving 250000
+    """
+    try:
+        # Mengambil argumen teks, mendukung nama akun yang diapit tanda kutip ("...")
+        args_text = " ".join(context.args)
+        
+        # Jika menggunakan tanda kutip, pisahkan dengan benar
+        import shlex
+        parts = shlex.split(args_text)
+        
+        if len(parts) < 3:
+            raise ValueError
+            
+        sumber_input = parts[0].lower()
+        tujuan_input = parts[1].lower()
+        
+        # Bersihkan format titik/koma pada nominal
+        nominal_str = parts[2].replace(".", "").replace(",", "")
+        nominal = int(nominal_str)
+        
+        if nominal <= 0:
+            await update.message.reply_text("⚠️ Nominal transfer harus lebih besar dari 0!", reply_markup=get_main_keyboard())
+            return
+
+        # --- FUNGSI HELPER PENCARI AKUN ---
+        def find_akun(query):
+            query = query.lower()
+            if "seabank" in query: return "seabank", "efektif"
+            if "jago" in query: return "jago", "efektif"
+            if "cash" in query or "tunai" in query: return "cash_tunai", "efektif"
+            
+            # Cek di alokasi non-efektif
+            for key in financial_data["alokasi"].keys():
+                if key.lower() == query:
+                    return key, "alokasi"
+            return None, None
+
+        sumber_key, sumber_tipe = find_akun(sumber_input)
+        tujuan_key, tujuan_tipe = find_akun(tujuan_input)
+
+        if not sumber_key:
+            await update.message.reply_text(f"⚠️ Akun sumber `{sumber_input}` tidak ditemukan!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return
+        if not tujuan_key:
+            await update.message.reply_text(f"⚠️ Akun tujuan `{tujuan_input}` tidak ditemukan!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return
+            
+        if sumber_key == tujuan_key:
+            await update.message.reply_text("⚠️ Akun sumber dan tujuan tidak boleh sama!", reply_markup=get_main_keyboard())
+            return
+
+        # Ambil saldo saat ini
+        saldo_sumber = financial_data["seabank"] if sumber_tipe == "efektif" and sumber_key == "seabank" else \
+                       financial_data["jago"] if sumber_tipe == "efektif" and sumber_key == "jago" else \
+                       financial_data["cash_tunai"] if sumber_tipe == "efektif" and sumber_key == "cash_tunai" else \
+                       financial_data["alokasi"][sumber_key]
+
+        # Validasi kecukupan saldo (Opsional tapi aman: Peringatan jika saldo efektif kurang, tapi tetap diizinkan jika alokasi minus)
+        if saldo_sumber < nominal:
+            await update.message.reply_text(
+                f"⚠️ **Saldo tidak mencukupi!**\nSaldo `{sumber_key}` saat ini hanya Rp {saldo_sumber:,}".replace(",", "."),
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            return
+
+        # --- EKSEKUSI TRANSFER ---
+        # 1. Kurangi sumber
+        if sumber_tipe == "efektif":
+            financial_data[sumber_key] -= nominal
+        else:
+            financial_data["alokasi"][sumber_key] -= nominal
+
+        # 2. Tambah tujuan
+        if tujuan_tipe == "efektif":
+            financial_data[tujuan_key] += nominal
+        else:
+            financial_data["alokasi"][tujuan_key] += nominal
+
+        # Simpan ke JSON
+        save_data()
+
+        # Format nama cantik untuk laporan
+        nama_sumber_label = sumber_key.replace("_", " ").title() if sumber_tipe == "efektif" else sumber_key
+        nama_tujuan_label = tujuan_key.replace("_", " ").title() if tujuan_tipe == "efektif" else tujuan_key
+
+        pesan_sukses = (
+            f"🔄 **TRANSFER BERHASIL**\n\n"
+            f"📤 Dari : `{nama_sumber_label}`\n"
+            f"📥 Ke   : `{nama_tujuan_label}`\n"
+            f"💰 Nominal: **Rp {nominal:,}**\n".replace(",", ".")
+        )
+        
+        await update.message.reply_text(pesan_sukses, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+    except (ValueError, IndexError):
+        contoh = (
+            "⚠️ **Format salah!**\n"
+            "Gunakan format:\n"
+            "`/tf <sumber> <tujuan> <nominal>`\n\n"
+            "Contoh:\n"
+            "`/tf seabank jago 500000`\n"
+            "`/tf cash \"gaji akmal\" 100000`\n"
+            "`/tf seabank saving 250000`"
+        )
+        await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
 
 # --- HANDLER: Tombol Interaktif ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -333,6 +446,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/se <nama> <nominal>` : Update saldo efektif tunggal.\n"
             "• `/sne <nama> <nominal>` : Update saldo non-efektif tunggal.\n"
             "• `/bulk` : Update banyak saldo sekaligus (Gunakan *Enter/Baris Baru*).\n"
+            "• `/tf <sumber> <tujuan> <nominal>` : Transfer dana antar akun.\n"
             "• `/resetdate <tanggal>` : Update tanggal laporan.\n"
         )
         keyboard = [
@@ -359,6 +473,7 @@ def main():
     app.add_handler(CommandHandler("sne", set_nonefektif))
     app.add_handler(CommandHandler("resetdate", reset_date))
     app.add_handler(CommandHandler("bulk", bulk_update))
+    app.add_handler(CommandHandler("transfer_saldo", bulk_update))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Laporan Keuangan sedang berjalan...")
