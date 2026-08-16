@@ -475,8 +475,7 @@ def main():
     app.add_handler(CommandHandler("sne", set_nonefektif))
     app.add_handler(CommandHandler("resetdate", reset_date))
     app.add_handler(CommandHandler("bulk", bulk_update))
-    app.add_handler(CommandHandler("tf", bulk_update))
-    app.add_handler(CommandHandler("transfer_saldo", bulk_update))
+    app.add_handler(CommandHandler("tf", transfer_saldo))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Laporan Keuangan sedang berjalan...")
