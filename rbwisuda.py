@@ -1,6 +1,6 @@
 """
 ======================================================================
-🤖 BOT TELEGRAM: LAPORAN KEUANGAN, REKAP PENJUALAN & GRAFIK INTERAKTIF
+🤖 BOT TELEGRAM: LAPORAN KEUANGAN, REKAP PENJUALAN & ARSIP TANGGAL
 ======================================================================
 """
 
@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import io
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -48,7 +49,7 @@ default_financial_data = {
         "gofood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "seabank"},
         "grabfood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "jago"},
     },
-    "history": {}
+    "history": {}  # Format: {"17 Aug 2026": {"balance": {...}, "sales": {...}}}
 }
 
 def load_data():
@@ -145,7 +146,6 @@ def generate_report_text():
 def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Lihat Laporan", callback_data="view_report")],
-        [InlineKeyboardButton("📊 Menu Grafik", callback_data="menu_chart")],
         [InlineKeyboardButton("📖 Cara Pakai", callback_data="help_menu")],
     ])
 
@@ -173,12 +173,12 @@ async def set_efektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif "jago" in nama: financial_data["jago"] = nominal
         elif "cash" in nama or "tunai" in nama: financial_data["cash_tunai"] = nominal
         else:
-            await update.message.reply_text("⚠️ Akun efektif tidak dikenal.", reply_markup=get_main_keyboard())
+            await update.message.reply_text("⚠️ Akun efektif tidak dikenal. Gunakan: Seabank, Jago, atau Cash", reply_markup=get_main_keyboard())
             return
         save_data()
         await update.message.reply_text(f"✅ Saldo efektif `{nama}` diupdate ke Rp {nominal:,}".replace(",", "."), parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (IndexError, ValueError):
-        await update.message.reply_text("⚠️ Format salah! Contoh: `/se Seabank 800000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text("⚠️ Format salah!\nContoh: `/se Seabank 800000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,7 +194,7 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"⚠️ Nama alokasi `{nama}` tidak ditemukan.", parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (IndexError, ValueError):
-        await update.message.reply_text("⚠️ Format salah! Contoh: `/sne \"Gaji Akmal\" 100000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text("⚠️ Format salah!\nContoh: `/sne \"Gaji Akmal\" 100000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 async def set_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,7 +225,7 @@ async def set_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wallet_label = target_wallet.replace("_", " ").title()
         await update.message.reply_text(f"✅ Rekap `{matched_channel.capitalize()}` diupdate (Masuk ke **{wallet_label}** +Rp {selisih_rupiah:,})".replace(",", "."), parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (IndexError, ValueError):
-        await update.message.reply_text("⚠️ Format salah! Contoh: `/sales offline 15 25 750000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text("⚠️ Format salah!\nContoh: `/sales offline 15 25 750000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 async def set_channel_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,7 +243,7 @@ async def set_channel_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE)
         save_data()
         await update.message.reply_text(f"✅ Channel **{matched_channel.capitalize()}** diatur ke wallet: **{target_wallet.replace('_', ' ').title()}**", parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (IndexError, ValueError):
-        await update.message.reply_text("⚠️ Format salah! Contoh: `/setchannel offline seabank`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text("⚠️ Format salah!\nContoh: `/setchannel offline seabank`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,16 +251,20 @@ async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tanggal_baru = " ".join(context.args)
         financial_data["date"] = tanggal_baru
         save_data()
-        await update.message.reply_text(f"✅ Tanggal aktif diubah ke: **{tanggal_baru}**", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"✅ Tanggal laporan diubah ke: **{tanggal_baru}**", parse_mode="Markdown", reply_markup=get_main_keyboard())
     else:
-        await update.message.reply_text("⚠️ Format salah! Contoh: `/resetdate 17 Aug 26`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await update.message.reply_text("⚠️ Format salah!\nContoh: `/resetdate 17 Aug 26`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
+# --- ARSIP & KONFIRMASI SAVE ---
 async def save_archive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format: /save balance atau /save sales atau /save overview atau /save all
+    """
     try:
         target = context.args[0].lower() if context.args else "all"
         if target not in ["balance", "sales", "overview", "all"]:
-            await update.message.reply_text("⚠️ Target tidak valid.", reply_markup=get_main_keyboard())
+            await update.message.reply_text("⚠️ Target tidak valid. Gunakan: `/save balance`, `/save sales`, atau `/save all`", parse_mode="Markdown", reply_markup=get_main_keyboard())
             return
 
         current_date = financial_data["date"]
@@ -271,25 +275,88 @@ async def save_archive_command(update: Update, context: ContextTypes.DEFAULT_TYP
             ]
         ]
         await update.message.reply_text(
-            f"📌 **KONFIRMASI PENYIMPANAN ARSIP**\n\n🗓️ Tanggal: `{current_date}`\n📂 Data: `{target.upper()}`\n\nSimpan/Timpa arsip ini?",
+            f"📌 **KONFIRMASI PENYIMPANAN ARSIP**\n\n"
+            f"🗓️ Tanggal: `{current_date}`\n"
+            f"📂 Data: `{target.upper()}`\n\n"
+            f"Apakah Anda yakin ingin menyimpan/mengupdate arsip tanggal ini?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Error: {e}", reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}", reply_markup=get_main_keyboard())
 
 
-# --- GENERATE GRAFIK (MATPLOTLIB) ---
-async def generate_and_send_chart(update_or_query, context, target):
+# --- FITUR EDIT HISTORY TANGGAL TERTENTU ---
+async def edit_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format: /editbalance <tanggal> <seabank> <jago> <cash>
+    Format: /editsales <tanggal> <channel> <nota> <porsi> <rupiah>
+    """
     try:
-        if not financial_data["history"]:
-            msg = "⚠️ Belum ada data history! Gunakan `/save all` terlebih dahulu."
-            if hasattr(update_or_query, "message") and update_or_query.message:
-                await update_or_query.message.reply_text(msg, parse_mode="Markdown")
-            else:
-                await update_or_query.edit_message_text(msg, parse_mode="Markdown")
+        command = update.message.text.split()[0].lower()
+        if len(context.args) < 2:
+            raise ValueError
+
+        tanggal = context.args[0]
+        # Cari tanggal di history (bisa berupa substring/pencocokan parsial)
+        matched_date = next((d for d in financial_data["history"] if tanggal.lower() in d.lower()), None)
+        if not matched_date:
+            await update.message.reply_text(f"⚠️ Tanggal `{tanggal}` belum ada di history arsip!", parse_mode="Markdown", reply_markup=get_main_keyboard())
             return
 
+        if "balance" in command:
+            if len(context.args) < 4:
+                await update.message.reply_text("⚠️ Format kurang lengkap!\nContoh: `/editbalance \"17 Aug 26\" 1000000 500000 200000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+                return
+            seabank = int(context.args[1].replace(".", ""))
+            jago = int(context.args[2].replace(".", ""))
+            cash = int(context.args[3].replace(".", ""))
+            
+            total_efektif = seabank + jago + cash
+            total_non_efektif = financial_data["history"][matched_date]["balance"].get("total_non_efektif", 0)
+            
+            financial_data["history"][matched_date]["balance"].update({
+                "seabank": seabank,
+                "jago": jago,
+                "cash_tunai": cash,
+                "total_efektif": total_efektif,
+                "grand_total": total_efektif + total_non_efektif
+            })
+            save_data()
+            await update.message.reply_text(f"✅ Balance arsip tanggal **{matched_date}** berhasil diupdate!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+        elif "sales" in command:
+            if len(context.args) < 5:
+                await update.message.reply_text("⚠️ Format kurang lengkap!\nContoh: `/editsales \"17 Aug 26\" offline 10 15 500000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
+                return
+            channel = context.args[1].lower()
+            nota = int(context.args[2])
+            porsi = int(context.args[3])
+            rupiah = int(context.args[4].replace(".", ""))
+
+            if channel in financial_data["history"][matched_date]["sales"]:
+                financial_data["history"][matched_date]["sales"][channel].update({
+                    "nota": nota,
+                    "porsi": porsi,
+                    "rupiah": rupiah
+                })
+                save_data()
+                await update.message.reply_text(f"✅ Sales arsip tanggal **{matched_date}** ({channel}) berhasil diupdate!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            else:
+                await update.message.reply_text(f"⚠️ Channel `{channel}` tidak ditemukan di arsip tersebut.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+    except (ValueError, IndexError):
+        await update.message.reply_text("⚠️ Format salah! Periksa kembali argumen perintah Anda.", reply_markup=get_main_keyboard())
+
+
+# --- GRAFIK ---
+async def send_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not financial_data["history"]:
+            await update.message.reply_text("⚠️ Belum ada data history! Gunakan `/save all` terlebih dahulu.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return
+
+        target = context.args[0].lower() if context.args else "sales"
         dates = list(financial_data["history"].keys())
 
         import matplotlib
@@ -304,13 +371,12 @@ async def generate_and_send_chart(update_or_query, context, target):
             plt.title("Grafik Grand Total Balance per Tanggal")
             plt.ylabel("Rupiah (Rp)")
         else:
-            metric = target.replace("sales_", "")
             channels = ["offline", "shopeefood", "gofood", "grabfood"]
             for ch in channels:
-                values = [d_val.get("sales", {}).get(ch, {}).get(metric, 0) for d_val in financial_data["history"].values()]
-                plt.plot(dates, values, marker='o', label=ch.capitalize(), linewidth=2)
-            plt.title(f"Grafik Penjualan ({metric.capitalize()}) per Channel")
-            plt.ylabel("Jumlah" if metric != "rupiah" else "Rupiah (Rp)")
+                ch_rupiah = [d_val.get("sales", {}).get(ch, {}).get("rupiah", 0) for d_val in financial_data["history"].values()]
+                plt.plot(dates, ch_rupiah, marker='o', label=ch.capitalize(), linewidth=2)
+            plt.title("Grafik Penjualan (Rupiah) per Channel")
+            plt.ylabel("Rupiah (Rp)")
             plt.legend()
 
         plt.xticks(rotation=45)
@@ -322,25 +388,10 @@ async def generate_and_send_chart(update_or_query, context, target):
         buf.seek(0)
         plt.close()
 
-        chat_id = update_or_query.effective_chat.id
-        await context.bot.send_photo(chat_id=chat_id, photo=buf, caption=f"📈 **Grafik Analisis ({target.upper()})**", parse_mode="Markdown")
+        await update.message.reply_photo(photo=buf, caption=f"📈 **Grafik Analisis ({target.upper()})**", parse_mode="Markdown")
 
     except Exception as e:
-        msg = f"⚠️ Gagal membuat grafik: {e}"
-        if hasattr(update_or_query, "message") and update_or_query.message:
-            await update_or_query.message.reply_text(msg, parse_mode="Markdown")
-        else:
-            await update_or_query.edit_message_text(msg, parse_mode="Markdown")
-
-
-async def send_chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = context.args[0].lower() if context.args else "sales_rupiah"
-    if target == "balance":
-        await generate_and_send_chart(update, context, "balance")
-    elif target in ["porsi", "nota", "rupiah"]:
-        await generate_and_send_chart(update, context, f"sales_{target}")
-    else:
-        await generate_and_send_chart(update, context, "sales_rupiah")
+        await update.message.reply_text(f"⚠️ Gagal membuat grafik: {e}", reply_markup=get_main_keyboard())
 
 
 # --- BULK & TRANSFER ---
@@ -349,6 +400,7 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lines:
         await update.message.reply_text("⚠️ Format salah!", reply_markup=get_main_keyboard())
         return
+
     success_updates = []
     errors = []
     for line in lines:
@@ -359,19 +411,27 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             errors.append(f"Format salah: `{line}`")
             continue
         nama_input, nominal_str = parts[0].lower().strip(), parts[1].replace(".", "")
-        try: nominal = int(nominal_str)
-        except ValueError: errors.append(f"Nominal tidak valid: `{line}`"); continue
+        try:
+            nominal = int(nominal_str)
+        except ValueError:
+            errors.append(f"Nominal tidak valid: `{line}`")
+            continue
         
         if "seabank" in nama_input: financial_data["seabank"] = nominal; success_updates.append(f"✅ Seabank: Rp {nominal:,}".replace(",", "."))
         elif "jago" in nama_input: financial_data["jago"] = nominal; success_updates.append(f"✅ Jago: Rp {nominal:,}".replace(",", "."))
         elif "cash" in nama_input or "tunai" in nama_input: financial_data["cash_tunai"] = nominal; success_updates.append(f"✅ Cash: Rp {nominal:,}".replace(",", "."))
         else:
             matched_key = next((k for k in financial_data["alokasi"] if k.lower() == nama_input), None)
-            if matched_key: financial_data["alokasi"][matched_key] = nominal; success_updates.append(f"✅ {matched_key}: Rp {nominal:,}".replace(",", "."))
-            else: errors.append(f"Nama tidak ditemukan: `{nama_input}`")
+            if matched_key:
+                financial_data["alokasi"][matched_key] = nominal
+                success_updates.append(f"✅ {matched_key}: Rp {nominal:,}".replace(",", "."))
+            else:
+                errors.append(f"Nama tidak ditemukan: `{nama_input}`")
 
     if success_updates: save_data()
-    await update.message.reply_text("📊 **BULK UPDATE SELESAI**", reply_markup=get_main_keyboard())
+    response_text = "📊 **BULK UPDATE:**\n\n" + ("\n".join(success_updates) + "\n\n" if success_updates else "")
+    if errors: response_text += "⚠️ **Gagal:**\n" + "\n".join(errors)
+    await update.message.reply_text(response_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -399,10 +459,15 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         sumber_key, sumber_tipe = find_akun(sumber_input)
         tujuan_key, tujuan_tipe = find_akun(tujuan_input)
-        if not sumber_key or not tujuan_key: return
+
+        if not sumber_key or not tujuan_key:
+            await update.message.reply_text("⚠️ Akun tidak ditemukan!", reply_markup=get_main_keyboard())
+            return
 
         saldo_sumber = financial_data[sumber_key] if sumber_tipe == "efektif" else financial_data["alokasi"][sumber_key]
-        if saldo_sumber < nominal: return
+        if saldo_sumber < nominal:
+            await update.message.reply_text(f"⚠️ Saldo `{sumber_key}` tidak cukup!", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            return
 
         if sumber_tipe == "efektif": financial_data[sumber_key] -= nominal
         else: financial_data["alokasi"][sumber_key] -= nominal
@@ -411,9 +476,9 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: financial_data["alokasi"][tujuan_key] += nominal
 
         save_data()
-        await update.message.reply_text(f"🔄 **TRANSFER BERHASIL**\n💰 Rp {nominal:,}".replace(",", "."), reply_markup=get_main_keyboard())
+        await update.message.reply_text(f"🔄 **TRANSFER BERHASIL**\n📤 `{sumber_key}` ➔ 📥 `{tujuan_key}`\n💰 Rp {nominal:,}".replace(",", "."), parse_mode="Markdown", reply_markup=get_main_keyboard())
     except (ValueError, IndexError):
-        pass
+        await update.message.reply_text("⚠️ Format salah! Contoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
 # --- HANDLER: Tombol Interaktif ---
@@ -429,40 +494,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "main_menu":
         await start(update, context)
-
-    elif data == "menu_chart":
-        keyboard = [
-            [InlineKeyboardButton("📈 Grafik Balance", callback_data="chart_balance")],
-            [InlineKeyboardButton("🛍️ Grafik Sales", callback_data="menu_chart_sales")],
-            [InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]
-        ]
-        await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "menu_chart_sales":
-        keyboard = [
-            [InlineKeyboardButton("💰 Grafik Rupiah", callback_data="chart_sales_rupiah")],
-            [InlineKeyboardButton("📦 Grafik Porsi", callback_data="chart_sales_porsi")],
-            [InlineKeyboardButton("🧾 Grafik Nota", callback_data="chart_sales_nota")],
-            [InlineKeyboardButton("⬅️ Kembali ke Menu Grafik", callback_data="menu_chart")]
-        ]
-        await query.edit_message_text("🛍️ **PILIH JENIS GRAFIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "chart_balance":
-        await generate_and_send_chart(query, context, "balance")
-    elif data == "chart_sales_rupiah":
-        await generate_and_send_chart(query, context, "sales_rupiah")
-    elif data == "chart_sales_porsi":
-        await generate_and_send_chart(query, context, "sales_porsi")
-    elif data == "chart_sales_nota":
-        await generate_and_send_chart(query, context, "sales_nota")
         
     elif data == "help_menu":
         help_text = (
             "🤖 **CARA PAKAI BOT**\n\n"
             "• `/report` : Laporan harian.\n"
-            "• `/resetdate 17 Aug 26` : Ubah tanggal aktif.\n"
-            "• `/save all` : Simpan/timpa arsip tanggal.\n"
-            "• Tombol Interaktif : Akses menu grafik dengan mudah.\n"
+            "• `/save balance` / `sales` / `all` : Simpan arsip.\n"
+            "• `/editbalance <tgl> <seabank> <jago> <cash>` : Edit arsip balance.\n"
+            "• `/editsales <tgl> <channel> <nota> <porsi> <rupiah>` : Edit arsip sales.\n"
+            "• `/chart balance` / `sales` : Lihat grafik.\n"
+            "• `/resetdate 17 Aug 26` : Ubah format tanggal aktif.\n"
         )
         keyboard = [[InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]]
         await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -470,6 +511,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("confirm_save_"):
         target = data.replace("confirm_save_", "")
         current_date = financial_data["date"]
+
         if current_date not in financial_data["history"]:
             financial_data["history"][current_date] = {"balance": {}, "sales": {}}
 
@@ -480,6 +522,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "seabank": financial_data["seabank"],
                 "jago": financial_data["jago"],
                 "cash_tunai": financial_data["cash_tunai"],
+                "total_efektif": total_efektif,
+                "total_non_efektif": total_non_efektif,
                 "grand_total": total_efektif + total_non_efektif
             }
 
@@ -491,7 +535,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✅ **ARSIP TANGGAL `{current_date}` BERHASIL DISIMPAN!**", parse_mode="Markdown")
 
     elif data == "cancel_save":
-        await query.edit_message_text("❌ **Penyimpanan dibatalkan.**", parse_mode="Markdown")
+        await query.edit_message_text("❌ **Penyimpanan arsip dibatalkan.**", parse_mode="Markdown")
 
 
 # --- MAIN FUNCTION ---
@@ -512,7 +556,9 @@ def main():
     app.add_handler(CommandHandler("sales", set_sales))
     app.add_handler(CommandHandler("setchannel", set_channel_wallet))
     app.add_handler(CommandHandler("save", save_archive_command))
-    app.add_handler(CommandHandler("chart", send_chart_command))
+    app.add_handler(CommandHandler("editbalance", edit_history_command))
+    app.add_handler(CommandHandler("editsales", edit_history_command))
+    app.add_handler(CommandHandler("chart", send_chart))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Laporan Keuangan sedang berjalan...")
