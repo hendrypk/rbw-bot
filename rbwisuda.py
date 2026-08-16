@@ -173,6 +173,82 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
 
+async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format input:
+    /bulk
+    seabank 1500000
+    cash 200000
+    gaji akmal 100000
+    """
+    # Mengambil teks pesan, memecah berdasarkan baris, dan mengabaikan baris pertama (/bulk)
+    lines = update.message.text.split('\n')[1:]
+    
+    if not lines:
+        contoh = (
+            "⚠️ **Format salah!**\nContoh penggunaan:\n\n"
+            "`/bulk`\n"
+            "`seabank 1500000`\n"
+            "`cash 500000`\n"
+            "`Sewa Lapak 700000`"
+        )
+        await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
+        return
+
+    success_updates = []
+    errors = []
+
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        # Memisahkan nama dan nominal dari spasi terakhir
+        parts = line.rsplit(' ', 1)
+        if len(parts) != 2:
+            errors.append(f"Format baris salah: `{line}`")
+            continue
+            
+        nama_input, nominal_str = parts[0].lower().strip(), parts[1].replace(".", "")
+        try:
+            nominal = int(nominal_str)
+        except ValueError:
+            errors.append(f"Nominal tidak valid: `{line}`")
+            continue
+        
+        # 1. Cek Saldo Efektif
+        if "seabank" in nama_input:
+            financial_data["seabank"] = nominal
+            success_updates.append(f"✅ Seabank: Rp {nominal:,}".replace(",", "."))
+        elif "cash" in nama_input or "tunai" in nama_input:
+            financial_data["cash_tunai"] = nominal
+            success_updates.append(f"✅ Cash/Tunai: Rp {nominal:,}".replace(",", "."))
+        
+        # 2. Cek Saldo Non-Efektif (Alokasi)
+        else:
+            matched_key = None
+            for key in financial_data["alokasi"].keys():
+                if key.lower() == nama_input:
+                    matched_key = key
+                    break
+            
+            if matched_key:
+                financial_data["alokasi"][matched_key] = nominal
+                success_updates.append(f"✅ {matched_key}: Rp {nominal:,}".replace(",", "."))
+            else:
+                errors.append(f"Nama tidak ditemukan: `{nama_input}`")
+
+    # 3. Buat Laporan Hasil Update
+    response_text = "📊 **HASIL BULK UPDATE:**\n\n"
+    if success_updates:
+        response_text += "\n".join(success_updates) + "\n\n"
+    if errors:
+        response_text += "⚠️ **Gagal Update (Cek Penulisan):**\n" + "\n".join(errors)
+        
+    await update.message.reply_text(
+        response_text, 
+        parse_mode="Markdown", 
+        reply_markup=get_main_keyboard()
+    )
 
 async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
@@ -217,6 +293,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/report` : Tampilkan Laporan.\n"
             "• `/se <nama> <nominal>` : Update saldo efektif.\n"
             "• `/sne <nama> <nominal>` : Update saldo non-efektif.\n"
+            "• `/bulk` : Update banyak saldo sekaligus (Gunakan *Enter/Baris Baru*).\n"
             "• `/resetdate <tanggal>` : Update tanggal laporan.\n"
         )
         keyboard = [
@@ -241,6 +318,7 @@ def main():
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("se", set_efektif))
     app.add_handler(CommandHandler("sne", set_nonefektif))
+    app.add_handler(CommandHandler("bulk", bulk_update))
     app.add_handler(CommandHandler("resetdate", reset_date))
     app.add_handler(CallbackQueryHandler(button_handler))
 
