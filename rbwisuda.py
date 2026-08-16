@@ -1,6 +1,6 @@
 """
 ======================================================================
-🤖 BOT TELEGRAM: LAPORAN KEUANGAN HARIAN
+🤖 BOT TELEGRAM: LAPORAN KEUANGAN HARIAN & REKAP PENJUALAN
 ======================================================================
 """
 
@@ -39,8 +39,14 @@ default_financial_data = {
         "Sewa Kontainer": 0,
         "BMT": 0,
         "Cabang 2": 0,
-        "Saving": 0,          # <--- ALOKASI SAVING DITAMBAHKAN
+        "Saving": 0,
     },
+    "sales": {
+        "offline": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "cash_tunai"},
+        "shopeefood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "seabank"},
+        "gofood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "seabank"},
+        "grabfood": {"nota": 0, "porsi": 0, "rupiah": 0, "wallet": "jago"},
+    }
 }
 
 def load_data():
@@ -49,12 +55,23 @@ def load_data():
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
             
-            # PENTING: Sinkronisasi jika ada alokasi baru (misal 'Saving') 
-            # yang belum ada di file data.json versi lama.
+            # Sinkronisasi alokasi jika ada yang baru
             if "alokasi" in data:
                 for key, default_val in default_financial_data["alokasi"].items():
                     if key not in data["alokasi"]:
                         data["alokasi"][key] = default_val
+                        
+            # Sinkronisasi sales jika belum ada
+            if "sales" not in data:
+                data["sales"] = default_financial_data["sales"]
+            else:
+                for channel, default_val in default_financial_data["sales"].items():
+                    if channel not in data["sales"]:
+                        data["sales"][channel] = default_val
+                    else:
+                        # Pastikan properti wallet ada di setiap channel lama
+                        if "wallet" not in data["sales"][channel]:
+                            data["sales"][channel]["wallet"] = default_val["wallet"]
             return data
             
     return default_financial_data.copy()
@@ -68,6 +85,15 @@ def save_data():
 financial_data = load_data()
 
 
+# --- FUNGSI HELPER MENCARI WALLET ---
+def parse_wallet_key(query):
+    query = query.lower().strip()
+    if "seabank" in query: return "seabank"
+    if "jago" in query: return "jago"
+    if "cash" in query or "tunai" in query: return "cash_tunai"
+    return None
+
+
 # --- FUNGSI UTAMA LAPORAN ---
 def generate_report_text():
     total_efektif = financial_data["seabank"] + financial_data["jago"] + financial_data["cash_tunai"]
@@ -76,6 +102,12 @@ def generate_report_text():
     ratio = (
         (total_efektif / grand_total) * 100 if grand_total > 0 else 0
     )
+
+    # Hitung Total Penjualan
+    sales = financial_data["sales"]
+    total_nota = sum(ch["nota"] for ch in sales.values())
+    total_porsi = sum(ch["porsi"] for ch in sales.values())
+    total_rupiah = sum(ch["rupiah"] for ch in sales.values())
 
     text = f"""==================================
 📊 **DAILY FINANCIAL REPORT**
@@ -97,6 +129,17 @@ def generate_report_text():
 
     text += f"""
 └ 🟥 **TOTAL NON-EFEKTIF: Rp {total_non_efektif:,}**
+
+==================================
+🛍️ **3. REKAP PENJUALAN & WALLET**
+----------------------------------"""
+
+    for ch_name, ch_data in sales.items():
+        w_label = ch_data['wallet'].replace('_', ' ').title()
+        text += f"\n├ {ch_name.capitalize():<10} : {ch_data['nota']} Nota | {ch_data['porsi']} Porsi | Rp {ch_data['rupiah']:,} ➔ *{w_label}*"
+
+    text += f"""
+└ 📦 **TOTAL : {total_nota} Nota | {total_porsi} Porsi | Rp {total_rupiah:,}**
 
 ==================================
 💰 **SUMMARY & LIQUIDITY**
@@ -210,6 +253,131 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def set_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format: /sales <channel> <nota> <porsi> <rupiah>
+    Contoh: /sales offline 15 25 750000
+    """
+    try:
+        if len(context.args) < 4:
+            raise ValueError
+            
+        channel_input = context.args[0].lower()
+        nota = int(context.args[1])
+        porsi = int(context.args[2])
+        rupiah = int(context.args[3].replace(".", "").replace(",", ""))
+
+        channel_map = {
+            "offline": "offline",
+            "shopee": "shopeefood",
+            "shopeefood": "shopeefood",
+            "gofood": "gofood",
+            "go": "gofood",
+            "grab": "grabfood",
+            "grabfood": "grabfood"
+        }
+
+        matched_channel = channel_map.get(channel_input)
+        if not matched_channel:
+            await update.message.reply_text(
+                "⚠️ Channel tidak dikenal!\nGunakan: `offline`, `shopeefood`, `gofood`, atau `grabfood`",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            return
+
+        # Ambil selisih jika rekap diupdate (agar wallet tidak terhitung double secara keliru, kita tambahkan selisih rupiahnya)
+        old_rupiah = financial_data["sales"][matched_channel]["rupiah"]
+        selisih_rupiah = rupiah - old_rupiah
+
+        # Update data sales
+        financial_data["sales"][matched_channel]["nota"] = nota
+        financial_data["sales"][matched_channel]["porsi"] = porsi
+        financial_data["sales"][matched_channel]["rupiah"] = rupiah
+
+        # Masukkan otomatis ke wallet yang diatur channel tersebut
+        target_wallet = financial_data["sales"][matched_channel]["wallet"]
+        financial_data[target_wallet] += selisih_rupiah
+
+        save_data()
+
+        wallet_label = target_wallet.replace("_", " ").title()
+        await update.message.reply_text(
+            f"✅ Rekap `{matched_channel.capitalize()}` diupdate:\n"
+            f"• Nota: {nota} | Porsi: {porsi} | Rp {rupiah:,}\n"
+            f"📥 Masuk otomatis ke wallet: **{wallet_label}** (+Rp {selisih_rupiah:,})".replace(",", "."),
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+
+    except (IndexError, ValueError):
+        contoh = (
+            "⚠️ **Format salah!**\n"
+            "Gunakan format:\n"
+            "`/sales <channel> <nota> <porsi> <rupiah>`\n\n"
+            "Contoh:\n"
+            "`/sales offline 15 25 750000`"
+        )
+        await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+
+async def set_channel_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Format: /setchannel <channel> <wallet>
+    Contoh: /setchannel offline seabank
+    Contoh: /setchannel offline cash
+    """
+    try:
+        if len(context.args) < 2:
+            raise ValueError
+
+        channel_input = context.args[0].lower()
+        wallet_input = context.args[1].lower()
+
+        channel_map = {
+            "offline": "offline",
+            "shopee": "shopeefood",
+            "shopeefood": "shopeefood",
+            "gofood": "gofood",
+            "grab": "grabfood",
+            "grabfood": "grabfood"
+        }
+
+        matched_channel = channel_map.get(channel_input)
+        target_wallet = parse_wallet_key(wallet_input)
+
+        if not matched_channel or not target_wallet:
+            await update.message.reply_text(
+                "⚠️ Format salah atau channel/wallet tidak dikenal!\n"
+                "Channel: `offline`, `shopeefood`, `gofood`, `grabfood`\n"
+                "Wallet: `seabank`, `jago`, `cash`",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            return
+
+        financial_data["sales"][matched_channel]["wallet"] = target_wallet
+        save_data()
+
+        wallet_label = target_wallet.replace("_", " ").title()
+        await update.message.reply_text(
+            f"✅ Penjualan dari channel **{matched_channel.capitalize()}** sekarang akan otomatis masuk ke wallet: **{wallet_label}**",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+
+    except (IndexError, ValueError):
+        contoh = (
+            "⚠️ **Format salah!**\n"
+            "Gunakan format:\n"
+            "`/setchannel <channel> <wallet>`\n\n"
+            "Contoh:\n"
+            "`/setchannel offline seabank`\n"
+            "`/setchannel offline cash`"
+        )
+        await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+
 async def reset_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         tanggal_baru = " ".join(context.args)
@@ -238,8 +406,7 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`seabank 1500000`\n"
             "`jago 500000`\n"
             "`cash 200000`\n"
-            "`saving 300000`\n"
-            "`sewa lapak 700000`"
+            "`saving 300000`"
         )
         await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
         return
@@ -263,7 +430,6 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             errors.append(f"Nominal tidak valid: `{line}`")
             continue
         
-        # 1. Cek Saldo Efektif
         if "seabank" in nama_input:
             financial_data["seabank"] = nominal
             success_updates.append(f"✅ Seabank: Rp {nominal:,}".replace(",", "."))
@@ -273,8 +439,6 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif "cash" in nama_input or "tunai" in nama_input:
             financial_data["cash_tunai"] = nominal
             success_updates.append(f"✅ Cash/Tunai: Rp {nominal:,}".replace(",", "."))
-        
-        # 2. Cek Saldo Non-Efektif (Alokasi)
         else:
             matched_key = None
             for key in financial_data["alokasi"].keys():
@@ -288,11 +452,9 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 errors.append(f"Nama tidak ditemukan: `{nama_input}`")
 
-    # Simpan semua perubahan bulk ke file
     if success_updates:
         save_data()
 
-    # 3. Buat Laporan Hasil Update
     response_text = "📊 **HASIL BULK UPDATE:**\n\n"
     if success_updates:
         response_text += "\n".join(success_updates) + "\n\n"
@@ -305,15 +467,8 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
+
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Format input didukung:
-    /tf <sumber> to <tujuan> <nominal>
-    /tf <sumber> ke <tujuan> <nominal>
-    /tf <sumber> <tujuan> <nominal>
-    Contoh: /tf seabank to jago 500000
-    Contoh: /tf cash ke "gaji akmal" 100000
-    """
     try:
         args_text = " ".join(context.args)
         import shlex
@@ -322,7 +477,6 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(parts) < 3:
             raise ValueError
             
-        # Jika kata kedua adalah "to" atau "ke", kita abaikan dan geser index-nya
         if parts[1].lower() in ["to", "ke"]:
             if len(parts) < 4:
                 raise ValueError
@@ -334,7 +488,6 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tujuan_input = parts[1].lower()
             nominal_raw = parts[2]
         
-        # Bersihkan format titik/koma pada nominal
         nominal_str = nominal_raw.replace(".", "").replace(",", "")
         nominal = int(nominal_str)
         
@@ -342,14 +495,12 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Nominal transfer harus lebih besar dari 0!", reply_markup=get_main_keyboard())
             return
 
-        # --- FUNGSI HELPER PENCARI AKUN ---
         def find_akun(query):
             query = query.lower()
             if "seabank" in query: return "seabank", "efektif"
             if "jago" in query: return "jago", "efektif"
             if "cash" in query or "tunai" in query: return "cash_tunai", "efektif"
             
-            # Cek di alokasi non-efektif
             for key in financial_data["alokasi"].keys():
                 if key.lower() == query:
                     return key, "alokasi"
@@ -369,7 +520,6 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Akun sumber dan tujuan tidak boleh sama!", reply_markup=get_main_keyboard())
             return
 
-        # Ambil saldo saat ini
         saldo_sumber = financial_data["seabank"] if sumber_tipe == "efektif" and sumber_key == "seabank" else \
                        financial_data["jago"] if sumber_tipe == "efektif" and sumber_key == "jago" else \
                        financial_data["cash_tunai"] if sumber_tipe == "efektif" and sumber_key == "cash_tunai" else \
@@ -383,7 +533,6 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # --- EKSEKUSI TRANSFER ---
         if sumber_tipe == "efektif":
             financial_data[sumber_key] -= nominal
         else:
@@ -412,14 +561,12 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contoh = (
             "⚠️ **Format salah!**\n"
             "Gunakan format:\n"
-            "`/tf <sumber> to <tujuan> <nominal>`\n"
-            "*(atau tanpa 'to' juga bisa)*\n\n"
+            "`/tf <sumber> to <tujuan> <nominal>`\n\n"
             "Contoh:\n"
-            "`/tf seabank to jago 500000`\n"
-            "`/tf cash ke \"gaji akmal\" 100000`\n"
-            "`/tf seabank saving 250000`"
+            "`/tf seabank to jago 500000`"
         )
         await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
 
 # --- HANDLER: Tombol Interaktif ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -445,10 +592,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = (
             "🤖 **CARA PAKAI BOT**\n\n"
             "• `/report` : Tampilkan Laporan.\n"
-            "• `/se <nama> <nominal>` : Update saldo efektif tunggal.\n"
-            "• `/sne <nama> <nominal>` : Update saldo non-efektif tunggal.\n"
-            "• `/bulk` : Update banyak saldo sekaligus (Gunakan *Enter/Baris Baru*).\n"
-            "• `/tf <sumber> <tujuan> <nominal>` : Transfer dana antar akun.\n"
+            "• `/se <nama> <nominal>` : Update saldo efektif.\n"
+            "• `/sne <nama> <nominal>` : Update saldo alokasi.\n"
+            "• `/bulk` : Update banyak saldo sekaligus.\n"
+            "• `/tf <sumber> [to/ke] <tujuan> <nominal>` : Transfer dana.\n"
+            "• `/sales <channel> <nota> <porsi> <rupiah>` : Rekap penjualan.\n"
+            "• `/setchannel <channel> <wallet>` : Atur tujuan wallet penjualan.\n"
             "• `/resetdate <tanggal>` : Update tanggal laporan.\n"
         )
         keyboard = [
@@ -476,6 +625,9 @@ def main():
     app.add_handler(CommandHandler("resetdate", reset_date))
     app.add_handler(CommandHandler("bulk", bulk_update))
     app.add_handler(CommandHandler("tf", transfer_saldo))
+    app.add_handler(CommandHandler("transfer", transfer_saldo))
+    app.add_handler(CommandHandler("sales", set_sales))
+    app.add_handler(CommandHandler("setchannel", set_channel_wallet))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Laporan Keuangan sedang berjalan...")
