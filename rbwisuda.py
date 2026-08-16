@@ -29,16 +29,17 @@ DATA_FILE = "data.json"
 
 default_financial_data = {
     "date": "17 August 2026",
-    "seabank": 761190,
+    "seabank": 0,
     "jago": 0,
-    "cash_tunai": 1878000,
+    "cash_tunai": 0,
     "alokasi": {
-        "Gaji Akmal": 80000,
-        "Gaji Owner": 59000,
-        "Sewa Lapak": 700000,
-        "Sewa Kontainer": 300000,
-        "BMT": 330731,
-        "Cabang 2": 459447,
+        "Gaji Akmal": 0,
+        "Gaji Owner": 0,
+        "Sewa Lapak": 0,
+        "Sewa Kontainer": 0,
+        "BMT": 0,
+        "saving": 0,
+        "Cabang 2": 0,
     },
 }
 
@@ -79,7 +80,7 @@ def generate_report_text():
 ├ Cash (Tunai)    : Rp {financial_data['cash_tunai']:,}
 └ 🟩 **TOTAL EFEKTIF: Rp {total_efektif:,}**
 
-🔒 **2. SALDO NON-EFEKTIF (ALOKASI)**
+🔒 **2. SALDO NON-EFEKTIF (Bank Jago)**
 ----------------------------------"""
 
     for k, v in financial_data["alokasi"].items():
