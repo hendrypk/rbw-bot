@@ -38,8 +38,8 @@ default_financial_data = {
         "Sewa Lapak": 0,
         "Sewa Kontainer": 0,
         "BMT": 0,
-        "saving": 0,
         "Cabang 2": 0,
+        "Saving": 0,          # <--- ALOKASI SAVING DITAMBAHKAN
     },
 }
 
@@ -47,7 +47,16 @@ def load_data():
     """Membaca data dari file JSON. Jika file belum ada, gunakan default."""
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            
+            # PENTING: Sinkronisasi jika ada alokasi baru (misal 'Saving') 
+            # yang belum ada di file data.json versi lama.
+            if "alokasi" in data:
+                for key, default_val in default_financial_data["alokasi"].items():
+                    if key not in data["alokasi"]:
+                        data["alokasi"][key] = default_val
+            return data
+            
     return default_financial_data.copy()
 
 def save_data():
@@ -80,7 +89,7 @@ def generate_report_text():
 ├ Cash (Tunai)    : Rp {financial_data['cash_tunai']:,}
 └ 🟩 **TOTAL EFEKTIF: Rp {total_efektif:,}**
 
-🔒 **2. SALDO NON-EFEKTIF (Bank Jago)**
+🔒 **2. SALDO NON-EFEKTIF (ALOKASI)**
 ----------------------------------"""
 
     for k, v in financial_data["alokasi"].items():
@@ -229,7 +238,8 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`seabank 1500000`\n"
             "`jago 500000`\n"
             "`cash 200000`\n"
-            "`Sewa Lapak 700000`"
+            "`saving 300000`\n"
+            "`sewa lapak 700000`"
         )
         await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
         return
