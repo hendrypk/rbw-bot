@@ -307,28 +307,35 @@ async def bulk_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Format input:
+    Format input didukung:
+    /tf <sumber> to <tujuan> <nominal>
+    /tf <sumber> ke <tujuan> <nominal>
     /tf <sumber> <tujuan> <nominal>
-    Contoh: /tf seabank jago 500000
-    Contoh: /tf cash "gaji akmal" 100000
-    Contoh: /tf seabank saving 250000
+    Contoh: /tf seabank to jago 500000
+    Contoh: /tf cash ke "gaji akmal" 100000
     """
     try:
-        # Mengambil argumen teks, mendukung nama akun yang diapit tanda kutip ("...")
         args_text = " ".join(context.args)
-        
-        # Jika menggunakan tanda kutip, pisahkan dengan benar
         import shlex
         parts = shlex.split(args_text)
         
         if len(parts) < 3:
             raise ValueError
             
-        sumber_input = parts[0].lower()
-        tujuan_input = parts[1].lower()
+        # Jika kata kedua adalah "to" atau "ke", kita abaikan dan geser index-nya
+        if parts[1].lower() in ["to", "ke"]:
+            if len(parts) < 4:
+                raise ValueError
+            sumber_input = parts[0].lower()
+            tujuan_input = parts[2].lower()
+            nominal_raw = parts[3]
+        else:
+            sumber_input = parts[0].lower()
+            tujuan_input = parts[1].lower()
+            nominal_raw = parts[2]
         
         # Bersihkan format titik/koma pada nominal
-        nominal_str = parts[2].replace(".", "").replace(",", "")
+        nominal_str = nominal_raw.replace(".", "").replace(",", "")
         nominal = int(nominal_str)
         
         if nominal <= 0:
@@ -368,7 +375,6 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        financial_data["cash_tunai"] if sumber_tipe == "efektif" and sumber_key == "cash_tunai" else \
                        financial_data["alokasi"][sumber_key]
 
-        # Validasi kecukupan saldo (Opsional tapi aman: Peringatan jika saldo efektif kurang, tapi tetap diizinkan jika alokasi minus)
         if saldo_sumber < nominal:
             await update.message.reply_text(
                 f"⚠️ **Saldo tidak mencukupi!**\nSaldo `{sumber_key}` saat ini hanya Rp {saldo_sumber:,}".replace(",", "."),
@@ -378,22 +384,18 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- EKSEKUSI TRANSFER ---
-        # 1. Kurangi sumber
         if sumber_tipe == "efektif":
             financial_data[sumber_key] -= nominal
         else:
             financial_data["alokasi"][sumber_key] -= nominal
 
-        # 2. Tambah tujuan
         if tujuan_tipe == "efektif":
             financial_data[tujuan_key] += nominal
         else:
             financial_data["alokasi"][tujuan_key] += nominal
 
-        # Simpan ke JSON
         save_data()
 
-        # Format nama cantik untuk laporan
         nama_sumber_label = sumber_key.replace("_", " ").title() if sumber_tipe == "efektif" else sumber_key
         nama_tujuan_label = tujuan_key.replace("_", " ").title() if tujuan_tipe == "efektif" else tujuan_key
 
@@ -410,14 +412,14 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         contoh = (
             "⚠️ **Format salah!**\n"
             "Gunakan format:\n"
-            "`/tf <sumber> <tujuan> <nominal>`\n\n"
+            "`/tf <sumber> to <tujuan> <nominal>`\n"
+            "*(atau tanpa 'to' juga bisa)*\n\n"
             "Contoh:\n"
-            "`/tf seabank jago 500000`\n"
-            "`/tf cash \"gaji akmal\" 100000`\n"
+            "`/tf seabank to jago 500000`\n"
+            "`/tf cash ke \"gaji akmal\" 100000`\n"
             "`/tf seabank saving 250000`"
         )
         await update.message.reply_text(contoh, parse_mode="Markdown", reply_markup=get_main_keyboard())
-
 
 # --- HANDLER: Tombol Interaktif ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
