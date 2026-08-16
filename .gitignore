@@ -1,1 +1,2 @@
 .env
+echo "data.json" >> .gitignore
