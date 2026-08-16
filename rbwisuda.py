@@ -304,7 +304,6 @@ async def generate_and_send_chart(update_or_query, context, target):
             plt.title("Grafik Grand Total Balance per Tanggal")
             plt.ylabel("Rupiah (Rp)")
         else:
-            # target bisa: sales_rupiah, sales_porsi, sales_nota
             metric = target.replace("sales_", "")
             channels = ["offline", "shopeefood", "gofood", "grabfood"]
             for ch in channels:
@@ -323,7 +322,6 @@ async def generate_and_send_chart(update_or_query, context, target):
         buf.seek(0)
         plt.close()
 
-        # Kirim foto grafik
         chat_id = update_or_query.effective_chat.id
         await context.bot.send_photo(chat_id=chat_id, photo=buf, caption=f"📈 **Grafik Analisis ({target.upper()})**", parse_mode="Markdown")
 
@@ -435,12 +433,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_chart":
         keyboard = [
             [InlineKeyboardButton("📈 Grafik Balance", callback_data="chart_balance")],
-            [InlineKeyboardButton("🛍️ Grafik Sales (Rupiah)", callback_data="chart_sales_rupiah")],
-            [InlineKeyboardButton("📦 Grafik Sales (Porsi)", callback_data="chart_sales_porsi")],
-            [InlineKeyboardButton("🧾 Grafik Sales (Nota)", callback_data="chart_sales_nota")],
+            [InlineKeyboardButton("🛍️ Grafik Sales", callback_data="menu_chart_sales")],
             [InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]
         ]
-        await query.edit_message_text("📊 **PILIH JENIS GRAFIK ANALISIS:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "menu_chart_sales":
+        keyboard = [
+            [InlineKeyboardButton("💰 Grafik Rupiah", callback_data="chart_sales_rupiah")],
+            [InlineKeyboardButton("📦 Grafik Porsi", callback_data="chart_sales_porsi")],
+            [InlineKeyboardButton("🧾 Grafik Nota", callback_data="chart_sales_nota")],
+            [InlineKeyboardButton("⬅️ Kembali ke Menu Grafik", callback_data="menu_chart")]
+        ]
+        await query.edit_message_text("🛍️ **PILIH JENIS GRAFIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "chart_balance":
         await generate_and_send_chart(query, context, "balance")
