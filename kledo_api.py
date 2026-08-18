@@ -3,47 +3,22 @@ import sqlite3
 import requests
 import logging
 import os
-import base64
 import pandas as pd
 from collections import Counter
-from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_VALUE
+from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
 from data import init_db
 
 TEMP_JSON_FILE = "temp_invoices.json"
 
 def create_kledo_session():
     """
-    Membuat session Kledo dengan 2 metode (Fallback):
-    1. Cara 1: Menggunakan Personal Access Token (PAT) langsung dari .env (Bearer Token).
-    2. Cara 2: Jika Cara 1 gagal/401, otomatis mencoba login via Basic Auth menggunakan Email & Password.
+    Membuat session Kledo menggunakan metode singleLogin 
+    dengan payload JSON lengkap, custom headers, dan cookies.
     """
     session = requests.Session()
-    
-    # --- CARA 1: Mencoba menggunakan Personal Access Token (PAT) dari .env ---
-    token = KLEDO_COOKIE_VALUE
-    if token:
-        session.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
-            "app-client": "web",
-            "X-App": X_APP,
-            "Authorization": f"Bearer {token}"
-        })
-        
-        try:
-            test_url = f"{API_HOST}/finance/invoices?per_page=1"
-            test_resp = session.get(test_url, timeout=10)
-            if test_resp.status_code != 401:
-                return session
-            else:
-                logging.warning("Cara 1 (PAT Token) menghasilkan 401 Unauthorized, beralih ke Cara 2...")
-        except Exception as e:
-            logging.warning(f"Cara 1 (PAT Token) gagal koneksi: {e}, beralih ke Cara 2...")
-    
-    # --- CARA 2: Fallback login via Basic Auth (Email & Password) ---
-    logging.info("Mencoba Cara 2: Login otomatis menggunakan Email & Password (Basic Auth)...")
     login_url = f"{API_HOST}/authentication/singleLogin"
     
+    # Payload lengkap sesuai panduan Postman/Script Anda
     payload = {
         "email": EMAIL,
         "password": PASSWORD,
@@ -54,48 +29,51 @@ def create_kledo_session():
         "apple_identity_token": None
     }
     
-    credentials = f"{EMAIL}:{PASSWORD}"
-    encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-    
     headers = {
-        "Content-Type": "application/json",
-        "Accept": "*/*",
-        "app-client": "web",
-        "X-App": X_APP,
-        "Authorization": f"Basic {encoded_credentials}"
+        'Content-Type': 'application/json',
+        'Accept': '*/*',
+        'app-client': 'web',
+        'X-App': X_APP
     }
     
+    # Memasukkan cookie jika nama dan nilainya tersedia di .env
+    cookies = {}
+    if KLEDO_COOKIE_NAME and KLEDO_COOKIE_VALUE:
+        cookies[KLEDO_COOKIE_NAME] = KLEDO_COOKIE_VALUE
+
     try:
-        response = session.post(login_url, json=payload, headers=headers, timeout=15)
+        logging.info("Mengirim request login ke Kledo dengan payload & cookie...")
+        response = session.post(login_url, json=payload, headers=headers, cookies=cookies, timeout=15)
         
-        if response.status_code == 401:
-            logging.error(f"Kledo Login Cara 2 401 Unauthorized: {response.text}")
-            return None
-            
+        # Cek jika ada error HTTP (401, 500, dll)
         response.raise_for_status()
         res_data = response.json()
         
+        logging.info("🎉 LOGIN BERHASIL!")
+        
+        # Mengambil access_token untuk request selanjutnya (seperti fetch invoices)
         access_token = res_data.get("data", {}).get("data", {}).get("access_token")
         
-        if not access_token:
-            logging.error("Kledo Login Error: access_token tidak ditemukan di response body!")
-            return None
+        if access_token:
+            # Update header sesi agar request ke /finance/invoices menggunakan token yang valid
+            session.headers.update({
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "app-client": "web",
+                "X-App": X_APP,
+                "Authorization": f"Bearer {access_token}"
+            })
+        else:
+            # Jika Kledo menggunakan cookie untuk otorisasi, setel header dasar
+            session.headers.update(headers)
             
-        session.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
-            "app-client": "web",
-            "X-App": X_APP,
-            "Authorization": f"Bearer {access_token}"
-        })
-        
         return session
         
     except requests.exceptions.HTTPError as err:
-        logging.error(f"Kledo Login HTTP Error (Cara 2): {err} - Response: {err.response.text}")
+        logging.error(f"❌ Kledo Login HTTP Error {err.response.status_code}: {err.response.text}")
         return None
     except Exception as e:
-        logging.error(f"Kledo Login Error (Cara 2): {e}")
+        logging.error(f"❌ Kledo Login Error Lainnya: {e}")
         return None
 
 def fetch_invoices_to_json(target_date):
