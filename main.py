@@ -1,9 +1,10 @@
 import asyncio
 import shlex
+import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN, GROUP_CHAT_ID
 from data import financial_data, save_data
 from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_peak_hours_from_db
 from bot_ui import (
@@ -147,8 +148,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove("temp_invoices.json")
         await query.edit_message_text("❌ Proses dibatalkan. File JSON sementara dihapus.", reply_markup=get_main_keyboard())
 
-# Tambahkan import fungsi baru di bagian atas main.py:
-
 # 1. Command untuk ambil data ke JSON
 async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -164,7 +163,6 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(err)
             return
             
-        # Jika sukses, berikan tombol konfirmasi
         keyboard = [
             [InlineKeyboardButton("📥 Insert to DB", callback_data="confirm_insert"),
              InlineKeyboardButton("❌ Skip / Ignore", callback_data="skip_insert")]
@@ -177,11 +175,25 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}")
 
-# 2. Command untuk melihat Analisis Peak Hour dari Database
+# 2. Command untuk Analisis Peak Session (Peak Hour & Peak Day) + Kirim Notifikasi
 async def peak_hour_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Menganalisis peak hours dari database...")
+    await update.message.reply_text("⏳ Menganalisis peak session (hour & day) dari database...")
     report = await asyncio.to_thread(analyze_peak_hours_from_db)
-    await update.message.reply_text(report, reply_markup=get_main_keyboard())
+    
+    # Balas pesan ke user yang mengetik command
+    await update.message.reply_text(report, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    
+    # Kirim otomatis sebagai notifikasi ke GROUP_CHAT_ID
+    if GROUP_CHAT_ID:
+        try:
+            bot = telegram.Bot(token=TELEGRAM_TOKEN)
+            await bot.send_message(
+                chat_id=GROUP_CHAT_ID,
+                text=f"🔔 **NOTIFIKASI LAPORAN PEAK SESSION**\n\n{report}",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"❌ Gagal mengirim notifikasi ke grup: {e}")
 
 def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")

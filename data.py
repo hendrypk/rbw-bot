@@ -59,6 +59,14 @@ def init_db():
             created_time TEXT,
             raw_data TEXT
         )
+        CREATE TABLE IF NOT EXISTS peak_analytics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            period_type TEXT,          -- 'HOUR' atau 'DAY'
+            period_key TEXT,           -- Contoh: '08' untuk jam 08:00 atau 'Senin'
+            total_transactions INTEGER,
+            total_omzet REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     ''')
     conn.commit()
     return conn
