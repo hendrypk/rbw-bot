@@ -4,50 +4,73 @@ import requests
 import logging
 import os
 from collections import Counter
-from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
+# from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
 from data import init_db
 
 TEMP_JSON_FILE = "temp_invoices.json"
 
+# import json
+import base64
+# import logging
+# import requests
+from config import API_HOST, X_APP, EMAIL, PASSWORD
+
 def create_kledo_session():
+    """Melakukan login ke Kledo menggunakan Basic Auth untuk mendapatkan Bearer access_token."""
     session = requests.Session()
+    
+    login_url = f"{API_HOST}/authentication/singleLogin"
+    
     payload = {
-        "email": EMAIL, 
-        "password": PASSWORD, 
+        "email": EMAIL,
+        "password": PASSWORD,
         "remember_me": 1,
-        "is_otp": 0, 
-        "use_jwt": 0, 
-        "include_init": 1, 
+        "is_otp": 0,
+        "use_jwt": 0,
+        "include_init": 1,
         "apple_identity_token": None
     }
     
+    # Membuat Basic Auth string dari email dan password
+    credentials = f"{EMAIL}:{PASSWORD}"
+    encoded_credentials = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+    
     headers = {
-        "Content-Type": "application/json", 
-        "Accept": "*/*", 
-        "app-client": "web", 
-        "X-App": X_APP
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "app-client": "web",
+        "X-App": X_APP,
+        "Authorization": f"Basic {encoded_credentials}"
     }
     
-    # Ambil cookie dari env jika tersedia
-    cookies = {}
-    if KLEDO_COOKIE_VALUE:
-        cookies[KLEDO_COOKIE_NAME] = KLEDO_COOKIE_VALUE
-
     try:
-        response = session.post(
-            f"{API_HOST}/authentication/singleLogin", 
-            json=payload, 
-            headers=headers, 
-            cookies=cookies,
-            timeout=15
-        )
+        response = session.post(login_url, json=payload, headers=headers, timeout=15)
         
         if response.status_code == 401:
             logging.error(f"Kledo Login 401 Unauthorized: {response.text}")
             return None
             
         response.raise_for_status()
+        res_data = response.json()
+        
+        # Ambil access_token dari response JSON
+        access_token = res_data.get("data", {}).get("data", {}).get("access_token")
+        
+        if not access_token:
+            logging.error("Kledo Login Error: access_token tidak ditemukan di response body!")
+            return None
+            
+        # Set session headers selanjutnya menggunakan Bearer token yang didapat
+        session.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "app-client": "web",
+            "X-App": X_APP,
+            "Authorization": f"Bearer {access_token}"
+        })
+        
         return session
+        
     except requests.exceptions.HTTPError as err:
         logging.error(f"Kledo Login HTTP Error: {err} - Response: {err.response.text}")
         return None
