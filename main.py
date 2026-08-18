@@ -112,13 +112,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
     
     # Handler Tombol Peak & Low Season
-    elif data in ["peak_season", "low_season"]:
+elif data in ["peak_season", "low_season"]:
         mode = "peak" if data == "peak_season" else "low"
-        title = "Peak Season" if mode == "peak" else "Low Season"
-        await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
+        await query.edit_message_text(f"⏳ Menganalisis data...", parse_mode="Markdown")
+        
+        # Ambil report
         report = await asyncio.to_thread(analyze_season_from_db, mode)
-        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
-
+        
+        # FIX: Escape teks report agar karakter khusus tidak error di Telegram
+        # Kita hanya escape isi report, bukan karakter Markdown yang kita buat sendiri
+        safe_report = escape_markdown(report)
+        
+        # Kirim dengan Markdown
+        await query.edit_message_text(
+            safe_report, 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), 
+            parse_mode="Markdown"
+        )
     # Handler Tombol Sync Data
     elif data == "sync_data":
         await query.edit_message_text("⏳ Sedang mengecek & menyinkronkan data terbaru dari Kledo...\nMohon tunggu beberapa detik.", parse_mode="Markdown")

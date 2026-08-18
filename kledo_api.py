@@ -269,3 +269,8 @@ def analyze_season_from_db(mode="peak"):
         return report.replace(",", ".")
     except Exception as e:
         return f"❌ Error: {e}"
+
+def escape_markdown(text):
+    """Escape karakter khusus agar aman di parse_mode='Markdown'"""
+    escape_chars = r'_*`['
+    return "".join(['\\' + char if char in escape_chars else char for char in text])
