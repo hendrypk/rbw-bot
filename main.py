@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandle
 
 from config import TELEGRAM_TOKEN
 from data import financial_data, save_data
-from kledo_api import run_kledo_analysis_pipeline, fetch_invoices_to_json, insert_temp_json_to_db, analyze_peak_hours_from_db
+from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_peak_hours_from_db
 from bot_ui import (
     get_main_keyboard, generate_report_text, parse_wallet_key, 
     parse_shortcut_range, generate_and_send_chart
