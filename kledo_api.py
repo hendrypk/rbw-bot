@@ -252,16 +252,19 @@ def analyze_season_from_db(mode="peak"):
         report = f"📊 **ANALISIS {title}**\n\n"
         
         report += f"🕒 **1. {'JAM SIBUK' if mode == 'peak' else 'JAM SEPI'}**\n"
-        for _, r in h_sum.iterrows(): 
-            report += f"- Jam {int(r.name):02d}:00 ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
-        
+        for _, r in hour_summary.iterrows():
+            # r['hour'] adalah kolom, bukan method
+            report += f"- Jam {int(r['hour']):02d}:00 ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
+            
         report += f"\n📅 **2. {'HARI SIBUK' if mode == 'peak' else 'HARI SEPI'}**\n"
-        for _, r in d_sum.iterrows(): 
-            report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
-        
+        for _, r in day_summary.iterrows():
+            # r['day_id'] adalah kolom
+            report += f"- {r['day_id']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
+            
         report += f"\n📆 **3. TOP 5 {'TANGGAL TERAMAI' if mode == 'peak' else 'TANGGAL TERSEPI'}**\n"
-        for _, r in t_sum.iterrows(): 
-            report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        for _, r in date_summary.iterrows():
+            # r['date'] adalah kolom
+            report += f"- {r['date']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
         
         return report.replace(",", ".")
     except Exception as e:
