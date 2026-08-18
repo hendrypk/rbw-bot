@@ -138,148 +138,112 @@ def insert_temp_json_to_db():
         return 0, f"❌ Error Database: {e}"
 
 def sync_missing_invoices():
+    """Sinkronisasi total: Menarik daftar invoice, lalu mengambil detail per invoice untuk mendapatkan created_at dari log."""
     try:
         session = create_kledo_session()
-        if not session:
-            return "❌ Gagal login ke Kledo."
+        if not session: return "❌ Gagal login ke Kledo."
 
         db_conn = init_db()
         cursor = db_conn.cursor()
-        
         total_inserted = 0
         total_updated = 0
         
-        # 1. Ambil data dengan Pagination
         current_page = 1
-        last_page = 1
-        
-        while current_page <= last_page:
+        while True:
+            # 1. Tarik list invoice
             url = f"{API_HOST}/finance/invoices?page={current_page}&per_page=50"
             resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
-            resp.raise_for_status()
             res = resp.json()
-            
             data_list = res.get("data", {}).get("data", [])
-            last_page = res.get("data", {}).get("last_page", 1)
+            if not data_list: break
             
-            for inv in data_list:
-                inv_id = inv.get("id")
-                updated_at_kledo = inv.get("updated_at")
-                raw_data_json = json.dumps(inv)
+            for inv_list in data_list:
+                inv_id = inv_list.get("id")
+                updated_at_kledo = inv_list.get("updated_at")
                 
-                # 2. Cek apakah row sudah ada di DB
+                # Cek di DB
                 cursor.execute("SELECT updated_at FROM invoices WHERE invoice_id = ?", (inv_id,))
                 row = cursor.fetchone()
                 
-                if not row:
-                    # INSERT: Jika belum ada
-                    cursor.execute('''INSERT INTO invoices 
-                        (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
-                        (inv_id, inv.get("ref_number"), inv.get("contact", {}).get("name"), 
-                         inv.get("amount"), str(inv.get("qty")), inv.get("created_at"), raw_data_json, updated_at_kledo))
-                    total_inserted += 1
-                
-                else:
-                    # UPDATE: Cek apakah updated_at di Kledo lebih baru daripada di DB
-                    if row[0] != updated_at_kledo:
+                # Jika belum ada atau perlu update, ambil data DETAIL (termasuk log)
+                if not row or row[0] != updated_at_kledo:
+                    detail_resp = session.get(f"{API_HOST}/finance/invoices/{inv_id}", headers={"Accept": "application/json", "X-App": X_APP})
+                    detail = detail_resp.json().get("data", {})
+                    
+                    # Ambil created_at yang akurat dari log
+                    log_created_at = detail.get("log", {}).get("action", {}).get("created_at")
+                    
+                    # Hitung items
+                    items = detail.get("items", [])
+                    products_str = ", ".join([f"{i.get('product_name')} (x{i.get('qty', 1)})" for i in items])
+                    raw_data_json = json.dumps(detail)
+                    
+                    if not row:
+                        cursor.execute('''INSERT INTO invoices 
+                            (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+                            (inv_id, detail.get("ref_number"), detail.get("contact", {}).get("name"), 
+                             detail.get("amount"), products_str, log_created_at, raw_data_json, updated_at_kledo))
+                        total_inserted += 1
+                    else:
                         cursor.execute('''UPDATE invoices SET ref_number=?, contact_name=?, amount=?, 
                                           products=?, created_time=?, raw_data=?, updated_at=? 
                                           WHERE invoice_id=?''', 
-                                          (inv.get("ref_number"), inv.get("contact", {}).get("name"), inv.get("amount"), 
-                                           str(inv.get("qty")), inv.get("created_at"), raw_data_json, updated_at_kledo, inv_id))
+                                          (detail.get("ref_number"), detail.get("contact", {}).get("name"), detail.get("amount"), 
+                                           products_str, log_created_at, raw_data_json, updated_at_kledo, inv_id))
                         total_updated += 1
             
             current_page += 1
+            if current_page > res.get("data", {}).get("last_page", 1): break
             
         db_conn.commit()
         db_conn.close()
-        
-        if total_inserted == 0 and total_updated == 0:
-            return "✅ Data sudah sinkron (100% cocok)."
-            
-        return f"🔄 **SINKRONISASI SELESAI**\n\n✅ Data Baru: {total_inserted}\n✏️ Data Diperbarui: {total_updated}"
-        
+        return f"🔄 **SYNC SELESAI**\n✅ Baru: {total_inserted}\n✏️ Update: {total_updated}"
     except Exception as e:
-        return f"❌ Error saat sinkronisasi: {e}"
+        return f"❌ Error Sync: {e}"
 
 def analyze_season_from_db(mode="peak"):
-    """
-    Analisis menggunakan jam dari log.action.created_at sesuai struktur JSON Kledo.
-    """
     try:
         db_conn = init_db()
-        # Mengambil raw_data agar bisa parsing JSON log
-        query = "SELECT amount, raw_data FROM invoices"
-        df = pd.read_sql(query, db_conn)
+        df = pd.read_sql("SELECT amount, raw_data FROM invoices", db_conn)
         db_conn.close()
         
-        if df.empty:
-            return "⚠️ Database masih kosong."
+        if df.empty: return "⚠️ Database kosong."
 
-        # Fungsi helper untuk ekstrak waktu dari JSON raw_data
-        def get_datetime_from_raw(raw_str):
+        def get_log_time(raw):
             try:
-                data = json.loads(raw_str)
-                # Jalur ambil: log -> action -> created_at
-                created_at_str = data.get("log", {}).get("action", {}).get("created_at")
-                if created_at_str:
-                    return pd.to_datetime(created_at_str)
-                return None
-            except:
-                return None
+                data = json.loads(raw)
+                # Ambil dari log action created_at
+                ts = data.get("log", {}).get("action", {}).get("created_at")
+                return pd.to_datetime(ts) if ts else None
+            except: return None
 
-        # Fungsi helper untuk hitung total porsi (qty)
-        def get_total_items(raw_str):
-            try:
-                data = json.loads(raw_str)
-                return sum(float(item.get('qty', 1)) for item in data.get('items', []))
-            except:
-                return 0
-
-        # Terapkan ekstraksi
-        df['dt'] = df['raw_data'].apply(get_datetime_from_raw)
+        df['dt'] = df['raw_data'].apply(get_log_time)
         df = df.dropna(subset=['dt'])
-        df['total_items'] = df['raw_data'].apply(get_total_items)
         
-        # Ekstrak fitur waktu
+        # Hitung item (qty)
+        df['total_items'] = df['raw_data'].apply(lambda x: sum(float(i.get('qty', 1)) for i in json.loads(x).get('items', [])))
+        
         df['hour'] = df['dt'].dt.hour
         df['date'] = df['dt'].dt.date
-        day_mapping = {
-            'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu',
+        df['day_id'] = df['dt'].dt.day_name().map({
+            'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu', 
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
-        }
-        df['day_id'] = df['dt'].dt.day_name().map(day_mapping)
+        })
         
-        # Agregasi (sama seperti sebelumnya)
-        hour_summary = df.groupby('hour').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
-        day_summary = df.groupby('day_id').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
-        date_summary = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
+        asc = (mode == "low")
+        h_sum = df.groupby('hour').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc)
+        d_sum = df.groupby('day_id').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc)
+        t_sum = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).head(5)
         
-        # Sorting mode
-        asc_order = True if mode == "low" else False
-        hour_summary = hour_summary[hour_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order)
-        day_summary = day_summary[day_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order)
-        date_summary = date_summary[date_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order).head(5)
+        title = "🔥 PEAK" if mode == "peak" else "❄️ LOW"
+        report = f"📊 **ANALISIS {title} SEASON**\n\n🕒 **JAM:**\n"
+        for _, r in h_sum.iterrows(): report += f"- Jam {int(r.name):02d}:00 ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        report += f"\n📅 **HARI:**\n"
+        for _, r in d_sum.iterrows(): report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        report += f"\n📆 **TOP 5 TANGGAL:**\n"
+        for _, r in t_sum.iterrows(): report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
         
-        # Susun laporan
-        title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
-        report = f"📊 **ANALISIS {title}**\n\n"
-        
-        report += f"🕒 **1. {'JAM SIBUK' if mode == 'peak' else 'JAM SEPI'}**\n"
-        for _, r in hour_summary.iterrows():
-            report += f"- Jam {int(r['hour']):02d}:00 ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
-            
-        report += f"\n📅 **2. {'HARI SIBUK' if mode == 'peak' else 'HARI SEPI'}**\n"
-        for _, r in day_summary.iterrows():
-            report += f"- {r['day_id']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
-            
-        report += f"\n📆 **3. TOP 5 {'TANGGAL TERAMAI' if mode == 'peak' else 'TANGGAL TERSEPI'}**\n"
-        for _, r in date_summary.iterrows():
-            tgl = r['date'].strftime("%d %b %Y")
-            report += f"- {tgl} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
-            
-        return report
-        
+        return report.replace(",", ".")
     except Exception as e:
-        return f"❌ Error analisis: {e}"
+        return f"❌ Error: {e}"
