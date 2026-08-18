@@ -1,6 +1,6 @@
+import os
 import asyncio
 import shlex
-import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
@@ -87,9 +87,10 @@ async def save_archive_command(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [[InlineKeyboardButton("✅ OKE SAVE", callback_data=f"confirm_save_{target}"), InlineKeyboardButton("❌ CANCEL", callback_data="cancel_save")]]
     await update.message.reply_text(f"📌 **KONFIRMASI ARSIP**\n🗓️ `{current_date}` | 📂 `{target.upper()}`\nSimpan?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# FIX 1: Memperbaiki referensi fungsi yang hilang
 async def kledo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Sedang menyambungkan ke Kledo, mengambil data & menganalisis...")
-    result_text = await asyncio.to_thread(run_kledo_analysis_pipeline)
+    await update.message.reply_text("⏳ Menganalisis data dari database lokal...")
+    result_text = await asyncio.to_thread(analyze_peak_hours_from_db)
     await update.message.reply_text(result_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,10 +113,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
     elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
     
-    elif data == "kledo_analysis":
-        await query.edit_message_text("⏳ Sedang menyambungkan ke Kledo & menganalisis data...", parse_mode="Markdown")
-        result_text = await asyncio.to_thread(run_kledo_analysis_pipeline)
-        await query.edit_message_text(result_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+    elif data in ["peak_hour", "peak_day"]:
+        await query.edit_message_text("⏳ Menganalisis peak session dari database...", parse_mode="Markdown")
+        report = await asyncio.to_thread(analyze_peak_hours_from_db)
+        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
 
     elif data == "transfer_info":
         await query.edit_message_text("🔄 **MENU TRANSFER SALDO**\nContoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]))
@@ -143,7 +144,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"✅ Berhasil! **{saved}** invoice telah disimpan ke database.", parse_mode="Markdown", reply_markup=get_main_keyboard())
             
     elif data == "skip_insert":
-        import os
         if os.path.exists("temp_invoices.json"):
             os.remove("temp_invoices.json")
         await query.edit_message_text("❌ Proses dibatalkan. File JSON sementara dihapus.", reply_markup=get_main_keyboard())
@@ -175,7 +175,7 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}")
 
-# 2. Command untuk Analisis Peak Session (Peak Hour & Peak Day) + Kirim Notifikasi
+# FIX 2: Menggunakan context.bot alih-alih membuat session bot baru
 async def peak_hour_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Menganalisis peak session (hour & day) dari database...")
     report = await asyncio.to_thread(analyze_peak_hours_from_db)
@@ -183,11 +183,10 @@ async def peak_hour_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Balas pesan ke user yang mengetik command
     await update.message.reply_text(report, parse_mode="Markdown", reply_markup=get_main_keyboard())
     
-    # Kirim otomatis sebagai notifikasi ke GROUP_CHAT_ID
+    # Kirim otomatis sebagai notifikasi ke GROUP_CHAT_ID menggunakan context.bot
     if GROUP_CHAT_ID:
         try:
-            bot = telegram.Bot(token=TELEGRAM_TOKEN)
-            await bot.send_message(
+            await context.bot.send_message(
                 chat_id=GROUP_CHAT_ID,
                 text=f"🔔 **NOTIFIKASI LAPORAN PEAK SESSION**\n\n{report}",
                 parse_mode="Markdown"

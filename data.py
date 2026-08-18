@@ -49,6 +49,7 @@ def save_data(data_obj):
 def init_db():
     conn = sqlite3.connect('kledo_invoices.db')
     cursor = conn.cursor()
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invoices (
             invoice_id INTEGER PRIMARY KEY,
@@ -59,6 +60,9 @@ def init_db():
             created_time TEXT,
             raw_data TEXT
         )
+    ''')
+    
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS peak_analytics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             period_type TEXT,          -- 'HOUR' atau 'DAY'
@@ -68,8 +72,8 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
     conn.commit()
     return conn
 
-# Inisialisasi data global untuk bot
 financial_data = load_data()

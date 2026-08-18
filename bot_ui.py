@@ -10,7 +10,10 @@ def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📈 Lihat Laporan", callback_data="view_report")],
         [InlineKeyboardButton("📊 Menu Grafik", callback_data="menu_chart")],
-        [InlineKeyboardButton("🔍 Analyze Peak Hours", callback_data="kledo_analysis")],
+        [
+            InlineKeyboardButton("⏰ Peak Hour", callback_data="peak_hour"),
+            InlineKeyboardButton("📅 Peak Days", callback_data="peak_day")
+        ],
         [InlineKeyboardButton("🔄 Transfer Saldo", callback_data="transfer_info")],
         [InlineKeyboardButton("📖 Cara Pakai", callback_data="help_menu")],
     ])
@@ -112,8 +115,12 @@ async def generate_and_send_chart(update_or_query, context, target, start_date=N
         plt.close()
 
         chat_id = update_or_query.effective_chat.id if hasattr(update_or_query, "effective_chat") else update_or_query.message.chat_id
-        await context.bot.send_photo(chat_id=chat_id, photo=buf, caption=f"📈 **Grafik Analisis ({target.upper()})**\n🗓️ Periode: {filtered_dates[0]} s/d {filtered_dates[-1]}", parse_mode="Markdown")
-    except Exception as e:
+        
+        # Hilangkan underscore agar tidak dianggap format italic oleh Telegram
+        safe_target = target.replace('_', ' ').upper()
+        caption_text = f"📈 *Grafik Analisis ({safe_target})*\n🗓️ Periode: {filtered_dates[0]} s/d {filtered_dates[-1]}"
+        
+        except Exception as e:
         msg = f"⚠️ Gagal membuat grafik: {e}"
         if hasattr(update_or_query, "message") and update_or_query.message: await update_or_query.message.reply_text(msg, parse_mode="Markdown")
         else: await update_or_query.edit_message_text(msg, parse_mode="Markdown")
