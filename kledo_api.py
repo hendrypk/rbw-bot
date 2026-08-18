@@ -139,79 +139,69 @@ def insert_temp_json_to_db():
 
 def sync_missing_invoices():
     try:
-        db_conn = init_db()
-        cursor = db_conn.cursor()
-        
-        # 1. Cari tanggal transaksi terakhir
-        cursor.execute("SELECT MAX(substr(created_time, 1, 10)) FROM invoices")
-        result = cursor.fetchone()
-        latest_db_date_str = result[0] if result and result[0] else None
-        
-        today = datetime.now().date()
-        start_date = datetime.strptime(latest_db_date_str, "%Y-%m-%d").date() if latest_db_date_str else today - timedelta(days=7)
-            
-        dates_to_check = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") 
-                          for i in range((today - start_date).days + 1)]
-            
-        if not dates_to_check:
-            return "✅ Database sudah up-to-date."
-
         session = create_kledo_session()
         if not session:
             return "❌ Gagal login ke Kledo."
-            
-        report_lines = []
+
+        db_conn = init_db()
+        cursor = db_conn.cursor()
+        
         total_inserted = 0
         total_updated = 0
         
-        for check_date in dates_to_check:
-            url = f"{API_HOST}/finance/invoices?date_from={check_date}&date_to={check_date}&contact_id=1&per_page=100"
-            try:
-                resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
-                resp.raise_for_status()
-                data = resp.json().get("data", {}).get("data", [])
+        # 1. Ambil data dengan Pagination
+        current_page = 1
+        last_page = 1
+        
+        while current_page <= last_page:
+            url = f"{API_HOST}/finance/invoices?page={current_page}&per_page=50"
+            resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
+            resp.raise_for_status()
+            res = resp.json()
+            
+            data_list = res.get("data", {}).get("data", [])
+            last_page = res.get("data", {}).get("last_page", 1)
+            
+            for inv in data_list:
+                inv_id = inv.get("id")
+                updated_at_kledo = inv.get("updated_at")
+                raw_data_json = json.dumps(inv)
                 
-                for inv in data:
-                    inv_id = inv.get("id")
-                    # Pastikan data lengkap
-                    ref_number = inv.get("ref_number")
-                    c_name = inv.get("contact", {}).get("name")
-                    amount = inv.get("amount")
-                    created_at = inv.get("log", {}).get("action", {}).get("created_at") or inv.get("created_at") or inv.get("trans_date")
-                    items = inv.get("items", [])
-                    products_str = ", ".join([f"{i.get('product_name')} (x{i.get('qty', 1)})" for i in items])
-                    raw_data_json = json.dumps(inv)
-                    
-                    # 2. Cek apakah invoice sudah ada
-                    cursor.execute("SELECT raw_data FROM invoices WHERE invoice_id = ?", (inv_id,))
-                    row = cursor.fetchone()
-                    
-                    if not row:
-                        # INSERT: Jika belum ada
-                        cursor.execute('''INSERT INTO invoices (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data)
-                                          VALUES (?, ?, ?, ?, ?, ?, ?)''', (inv_id, ref_number, c_name, amount, products_str, created_at, raw_data_json))
-                        total_inserted += 1
-                    else:
-                        # UPDATE: Jika sudah ada, bandingkan raw_data untuk memastikan kelengkapan
-                        if row[0] != raw_data_json:
-                            cursor.execute('''UPDATE invoices SET ref_number=?, contact_name=?, amount=?, products=?, created_time=?, raw_data=? 
-                                              WHERE invoice_id=?''', (ref_number, c_name, amount, products_str, created_at, raw_data_json, inv_id))
-                            total_updated += 1
-                        
-                db_conn.commit()
+                # 2. Cek apakah row sudah ada di DB
+                cursor.execute("SELECT updated_at FROM invoices WHERE invoice_id = ?", (inv_id,))
+                row = cursor.fetchone()
                 
-            except Exception as e:
-                report_lines.append(f"📅 `{check_date}`: ❌ Error ({e})")
+                if not row:
+                    # INSERT: Jika belum ada
+                    cursor.execute('''INSERT INTO invoices 
+                        (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+                        (inv_id, inv.get("ref_number"), inv.get("contact", {}).get("name"), 
+                         inv.get("amount"), str(inv.get("qty")), inv.get("created_at"), raw_data_json, updated_at_kledo))
+                    total_inserted += 1
                 
+                else:
+                    # UPDATE: Cek apakah updated_at di Kledo lebih baru daripada di DB
+                    if row[0] != updated_at_kledo:
+                        cursor.execute('''UPDATE invoices SET ref_number=?, contact_name=?, amount=?, 
+                                          products=?, created_time=?, raw_data=?, updated_at=? 
+                                          WHERE invoice_id=?''', 
+                                          (inv.get("ref_number"), inv.get("contact", {}).get("name"), inv.get("amount"), 
+                                           str(inv.get("qty")), inv.get("created_at"), raw_data_json, updated_at_kledo, inv_id))
+                        total_updated += 1
+            
+            current_page += 1
+            
+        db_conn.commit()
         db_conn.close()
         
         if total_inserted == 0 and total_updated == 0:
-            return "✅ Database sudah sinkron. Tidak ada perubahan."
+            return "✅ Data sudah sinkron (100% cocok)."
             
-        return f"🔄 **SINKRONISASI SELESAI**\n\n✅ Baru: {total_inserted}\n✏️ Diperbarui: {total_updated}\n\nTotal sinkronisasi sukses."
+        return f"🔄 **SINKRONISASI SELESAI**\n\n✅ Data Baru: {total_inserted}\n✏️ Data Diperbarui: {total_updated}"
         
     except Exception as e:
-        return f"❌ Error sync: {e}"
+        return f"❌ Error saat sinkronisasi: {e}"
 
 def analyze_season_from_db(mode="peak"):
     """

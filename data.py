@@ -50,6 +50,7 @@ def init_db():
     conn = sqlite3.connect('kledo_invoices.db')
     cursor = conn.cursor()
     
+    # 1. Pastikan tabel invoices ada
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invoices (
             invoice_id INTEGER PRIMARY KEY,
@@ -62,11 +63,20 @@ def init_db():
         )
     ''')
     
+    # 2. Tambahkan kolom 'updated_at' jika belum ada (ALTER TABLE)
+    try:
+        cursor.execute("ALTER TABLE invoices ADD COLUMN updated_at TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        # Error ini muncul jika kolom 'updated_at' sudah ada, jadi kita abaikan saja
+        pass
+    
+    # 3. Buat tabel peak_analytics
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS peak_analytics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            period_type TEXT,          -- 'HOUR' atau 'DAY'
-            period_key TEXT,           -- Contoh: '08' untuk jam 08:00 atau 'Senin'
+            period_type TEXT,
+            period_key TEXT PRIMARY KEY,
             total_transactions INTEGER,
             total_omzet REAL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
