@@ -113,14 +113,15 @@ async def generate_and_send_chart(update_or_query, context, target, start_date=N
         plt.savefig(buf, format='png')
         buf.seek(0)
         plt.close()
-
         chat_id = update_or_query.effective_chat.id if hasattr(update_or_query, "effective_chat") else update_or_query.message.chat_id
         
         # Hilangkan underscore agar tidak dianggap format italic oleh Telegram
         safe_target = target.replace('_', ' ').upper()
         caption_text = f"📈 *Grafik Analisis ({safe_target})*\n🗓️ Periode: {filtered_dates[0]} s/d {filtered_dates[-1]}"
         
-        except Exception as e:
+        await context.bot.send_photo(chat_id=chat_id, photo=buf, caption=caption_text, parse_mode="Markdown")
+
+    except Exception as e:
         msg = f"⚠️ Gagal membuat grafik: {e}"
         if hasattr(update_or_query, "message") and update_or_query.message: await update_or_query.message.reply_text(msg, parse_mode="Markdown")
         else: await update_or_query.edit_message_text(msg, parse_mode="Markdown")
