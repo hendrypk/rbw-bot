@@ -2,8 +2,9 @@ import json
 import sqlite3
 import requests
 import logging
+import os
 from collections import Counter
-from config import API_HOST, X_APP, EMAIL, PASSWORD
+from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
 from data import init_db
 
 TEMP_JSON_FILE = "temp_invoices.json"
@@ -11,14 +12,45 @@ TEMP_JSON_FILE = "temp_invoices.json"
 def create_kledo_session():
     session = requests.Session()
     payload = {
-        "email": EMAIL, "password": PASSWORD, "remember_me": 1,
-        "is_otp": 0, "use_jwt": 0, "include_init": 1, "apple_identity_token": None
+        "email": EMAIL, 
+        "password": PASSWORD, 
+        "remember_me": 1,
+        "is_otp": 0, 
+        "use_jwt": 0, 
+        "include_init": 1, 
+        "apple_identity_token": None
     }
-    headers = {"Content-Type": "application/json", "Accept": "*/*", "app-client": "web", "X-App": X_APP}
+    
+    headers = {
+        "Content-Type": "application/json", 
+        "Accept": "*/*", 
+        "app-client": "web", 
+        "X-App": X_APP
+    }
+    
+    # Ambil cookie dari env jika tersedia
+    cookies = {}
+    if KLEDO_COOKIE_VALUE:
+        cookies[KLEDO_COOKIE_NAME] = KLEDO_COOKIE_VALUE
+
     try:
-        response = session.post(f"{API_HOST}/authentication/singleLogin", json=payload, headers=headers, timeout=15)
+        response = session.post(
+            f"{API_HOST}/authentication/singleLogin", 
+            json=payload, 
+            headers=headers, 
+            cookies=cookies,
+            timeout=15
+        )
+        
+        if response.status_code == 401:
+            logging.error(f"Kledo Login 401 Unauthorized: {response.text}")
+            return None
+            
         response.raise_for_status()
         return session
+    except requests.exceptions.HTTPError as err:
+        logging.error(f"Kledo Login HTTP Error: {err} - Response: {err.response.text}")
+        return None
     except Exception as e:
         logging.error(f"Kledo Login Error: {e}")
         return None
@@ -27,7 +59,7 @@ def fetch_invoices_to_json(target_date):
     """Tahap 1: Login, Tarik data Kledo berdasarkan tanggal, simpan ke file JSON sementara."""
     session = create_kledo_session()
     if not session:
-        return None, "❌ Gagal login ke Kledo. Periksa kembali email/password di .env!"
+        return None, "❌ Gagal login ke Kledo. Periksa kembali email, password, atau cookie di file .env!"
     
     url = f"{API_HOST}/finance/invoices?date_from={target_date}&date_to={target_date}&contact_id=1&per_page=100"
     
@@ -87,7 +119,6 @@ def insert_temp_json_to_db():
         db_conn.commit()
         db_conn.close()
         
-        # Hapus file temp setelah sukses dimasukkan ke DB
         os.remove(TEMP_JSON_FILE)
         return saved_count, None
     except Exception as e:
@@ -113,7 +144,8 @@ def analyze_peak_hours_from_db():
                     if " " in created_at:
                         hour = int(created_at.strip().split(" ")[1].split(":")[0])
                         hour_list.append(hour)
-                except: continue
+                except: 
+                    continue
                 
         counts = Counter(hour_list).most_common()
         report = "📊 PEAK HOURS ANALYTICS (DARI DATABASE)\n\n"
@@ -125,5 +157,3 @@ def analyze_peak_hours_from_db():
         return report
     except Exception as e:
         return f"❌ Error membaca database: {e}"
-
-import os # pastikan os terimport di kledo_api.py
