@@ -1,10 +1,12 @@
 import json
+import sqlite3
 import requests
 import logging
-from datetime import datetime
 from collections import Counter
 from config import API_HOST, X_APP, EMAIL, PASSWORD
 from data import init_db
+
+TEMP_JSON_FILE = "temp_invoices.json"
 
 def create_kledo_session():
     session = requests.Session()
@@ -14,36 +16,49 @@ def create_kledo_session():
     }
     headers = {"Content-Type": "application/json", "Accept": "*/*", "app-client": "web", "X-App": X_APP}
     try:
-        response = session.post(f"{API_HOST}/authentication/singleLogin", json=payload, headers=headers)
+        response = session.post(f"{API_HOST}/authentication/singleLogin", json=payload, headers=headers, timeout=15)
         response.raise_for_status()
         return session
     except Exception as e:
         logging.error(f"Kledo Login Error: {e}")
         return None
 
-def run_kledo_analysis_pipeline():
-    print("\n⏳ [1/3] Memulai proses login ke Kledo...")
+def fetch_invoices_to_json(target_date):
+    """Tahap 1: Login, Tarik data Kledo berdasarkan tanggal, simpan ke file JSON sementara."""
     session = create_kledo_session()
     if not session:
-        return "❌ Gagal login ke Kledo. Periksa kembali email/password di .env!"
+        return None, "❌ Gagal login ke Kledo. Periksa kembali email/password di .env!"
     
-    date_from, date_to = "2026-08-01", "2026-08-30"
-    print(f"⏳ [2/3] Mengambil data invoice...")
-    url = f"{API_HOST}/finance/invoices?date_from={date_from}&date_to={date_to}&contact_id=1&per_page=100"
+    url = f"{API_HOST}/finance/invoices?date_from={target_date}&date_to={target_date}&contact_id=1&per_page=100"
     
     try:
-        resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP})
+        resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
         resp.raise_for_status()
         data = resp.json().get("data", {}).get("data", [])
         
         if not data:
-            return "⚠️ Tidak ada data invoice POS Customer ditemukan."
+            return None, f"⚠️ Tidak ada data invoice POS Customer untuk tanggal {target_date}."
             
-        print("⏳ [3/3] Menyimpan ke database & Menganalisis...")
+        # Simpan ke file JSON sementara
+        with open(TEMP_JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            
+        return len(data), None
+    except Exception as e:
+        return None, f"❌ Error API Kledo: {e}"
+
+def insert_temp_json_to_db():
+    """Tahap 2: Membaca file JSON sementara dan memasukkannya ke SQLite Database."""
+    try:
+        if not os.path.exists(TEMP_JSON_FILE):
+            return 0, "⚠️ Data JSON sementara tidak ditemukan."
+            
+        with open(TEMP_JSON_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
         db_conn = init_db()
         cursor = db_conn.cursor()
         saved_count = 0
-        hour_list = []
         
         for inv in data:
             contact = inv.get("contact", {})
@@ -69,23 +84,46 @@ def run_kledo_analysis_pipeline():
             
             saved_count += 1
             
+        db_conn.commit()
+        db_conn.close()
+        
+        # Hapus file temp setelah sukses dimasukkan ke DB
+        os.remove(TEMP_JSON_FILE)
+        return saved_count, None
+    except Exception as e:
+        return 0, f"❌ Error Database: {e}"
+
+def analyze_peak_hours_from_db():
+    """Tahap 3: Membaca data dari Database SQLite untuk analisis Peak Hours."""
+    try:
+        db_conn = init_db()
+        cursor = db_conn.cursor()
+        cursor.execute("SELECT created_time FROM invoices")
+        rows = cursor.fetchall()
+        db_conn.close()
+        
+        if not rows:
+            return "⚠️ Database masih kosong. Belum ada invoice yang di-insert."
+            
+        hour_list = []
+        for row in rows:
+            created_at = row[0]
             if created_at:
                 try:
                     if " " in created_at:
                         hour = int(created_at.strip().split(" ")[1].split(":")[0])
                         hour_list.append(hour)
                 except: continue
-                    
-        db_conn.commit()
-        db_conn.close()
-        
+                
         counts = Counter(hour_list).most_common()
-        report = f"📊 **PEAK HOURS ANALYTICS (POS CUSTOMER)**\n🗓️ `Periode: 01 - 30 Agustus 2026`\n💾 `Tersimpan: {saved_count} Invoices`\n\n"
+        report = "📊 PEAK HOURS ANALYTICS (DARI DATABASE)\n\n"
         if counts:
-            for h, c in sorted(counts): report += f"├ Jam {h:02d}:00 ➔ {c} Transaksi\n"
+            for h, c in sorted(counts):
+                report += f"- Jam {h:02d}:00 -> {c} Transaksi\n"
         else:
-            report += "⚠️ Belum ada data jam transaksi spesifik."
+            report += "⚠️ Tidak ada data jam transaksi yang valid di database."
         return report
-
     except Exception as e:
-        return f"❌ Error API: {e}"
+        return f"❌ Error membaca database: {e}"
+
+import os # pastikan os terimport di kledo_api.py

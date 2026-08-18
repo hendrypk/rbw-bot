@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandle
 
 from config import TELEGRAM_TOKEN
 from data import financial_data, save_data
-from kledo_api import run_kledo_analysis_pipeline
+from kledo_api import run_kledo_analysis_pipeline, fetch_invoices_to_json, insert_temp_json_to_db, analyze_peak_hours_from_db
 from bot_ui import (
     get_main_keyboard, generate_report_text, parse_wallet_key, 
     parse_shortcut_range, generate_and_send_chart
@@ -132,6 +132,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✅ **ARSIP TANGGAL `{current_date}` BERHASIL DISIMPAN!**", parse_mode="Markdown")
     elif data == "cancel_save":
         await query.edit_message_text("❌ **Penyimpanan arsip dibatalkan.**", parse_mode="Markdown")
+    
+    elif data == "confirm_insert":
+        await query.edit_message_text("⏳ Memasukkan data ke database SQLite...")
+        saved, err = await asyncio.to_thread(insert_temp_json_to_db)
+        if err:
+            await query.edit_message_text(err)
+        else:
+            await query.edit_message_text(f"✅ Berhasil! **{saved}** invoice telah disimpan ke database.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+            
+    elif data == "skip_insert":
+        import os
+        if os.path.exists("temp_invoices.json"):
+            os.remove("temp_invoices.json")
+        await query.edit_message_text("❌ Proses dibatalkan. File JSON sementara dihapus.", reply_markup=get_main_keyboard())
+
+# Tambahkan import fungsi baru di bagian atas main.py:
+
+# 1. Command untuk ambil data ke JSON
+async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            await update.message.reply_text("⚠️ Format salah!\nContoh: `/get_invoice 2026-08-09`", parse_mode="Markdown")
+            return
+            
+        target_date = context.args[0]
+        await update.message.reply_text(f"⏳ Sedang mengambil data invoice tanggal `{target_date}` dari Kledo...", parse_mode="Markdown")
+        
+        count, err = await asyncio.to_thread(fetch_invoices_to_json, target_date)
+        if err:
+            await update.message.reply_text(err)
+            return
+            
+        # Jika sukses, berikan tombol konfirmasi
+        keyboard = [
+            [InlineKeyboardButton("📥 Insert to DB", callback_data="confirm_insert"),
+             InlineKeyboardButton("❌ Skip / Ignore", callback_data="skip_insert")]
+        ]
+        await update.message.reply_text(
+            f"✅ Berhasil menarik **{count}** invoice untuk tanggal `{target_date}` dan disimpan ke file sementara.\n\nApakah Anda ingin memasukkannya ke database?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}")
+
+# 2. Command untuk melihat Analisis Peak Hour dari Database
+async def peak_hour_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Menganalisis peak hours dari database...")
+    report = await asyncio.to_thread(analyze_peak_hours_from_db)
+    await update.message.reply_text(report, reply_markup=get_main_keyboard())
 
 def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")
@@ -144,6 +194,8 @@ def main():
     app.add_handler(CommandHandler("tf", transfer_saldo))
     app.add_handler(CommandHandler("save", save_archive_command))
     app.add_handler(CommandHandler("kledo", kledo_command))
+    app.add_handler(CommandHandler("get_invoice", get_invoice_command))
+    app.add_handler(CommandHandler("peak", peak_hour_command))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Keuangan & Analisis Kledo sedang berjalan...")
