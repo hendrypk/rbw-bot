@@ -208,22 +208,32 @@ def analyze_season_from_db(mode="peak"):
         df = pd.read_sql("SELECT amount, raw_data FROM invoices", db_conn)
         db_conn.close()
         
-        if df.empty: return "⚠️ Database kosong."
+        if df.empty:
+            return "⚠️ Database kosong."
 
-        def get_log_time(raw):
+        # 1. Ekstrak waktu dan hitung item
+        def parse_row(raw):
             try:
                 data = json.loads(raw)
-                # Ambil dari log action created_at
                 ts = data.get("log", {}).get("action", {}).get("created_at")
-                return pd.to_datetime(ts) if ts else None
-            except: return None
+                if not ts: ts = data.get("created_at")
+                qty = sum(float(i.get('qty', 1)) for i in data.get('items', []))
+                return ts, qty
+            except:
+                return None, 0
 
-        df['dt'] = df['raw_data'].apply(get_log_time)
+        df[['ts_str', 'total_items']] = df['raw_data'].apply(lambda x: pd.Series(parse_row(x)))
+        
+        # 2. KONVERSI PAKSA: Langkah paling krusial untuk fix error .dt
+        df['dt'] = pd.to_datetime(df['ts_str'], errors='coerce')
+        
+        # 3. Filter: Hapus row yang gagal dikonversi (NaT)
         df = df.dropna(subset=['dt'])
         
-        # Hitung item (qty)
-        df['total_items'] = df['raw_data'].apply(lambda x: sum(float(i.get('qty', 1)) for i in json.loads(x).get('items', [])))
+        # 4. Pastikan kolom dt adalah datetime (perintah redundant untuk keamanan)
+        df['dt'] = pd.to_datetime(df['dt'])
         
+        # Sekarang aman untuk mengakses .dt
         df['hour'] = df['dt'].dt.hour
         df['date'] = df['dt'].dt.date
         df['day_id'] = df['dt'].dt.day_name().map({
@@ -231,12 +241,14 @@ def analyze_season_from_db(mode="peak"):
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
         })
         
+        # --- Lanjutkan dengan kode Agregasi yang sama seperti sebelumnya ---
         asc = (mode == "low")
         h_sum = df.groupby('hour').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc)
         d_sum = df.groupby('day_id').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc)
         t_sum = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).head(5)
         
-        title = "🔥 PEAK" if mode == "peak" else "❄️ LOW"
+        # ... [sisanya sama untuk menyusun report] ...
+                title = "🔥 PEAK" if mode == "peak" else "❄️ LOW"
         report = f"📊 **ANALISIS {title} SEASON**\n\n🕒 **JAM:**\n"
         for _, r in h_sum.iterrows(): report += f"- Jam {int(r.name):02d}:00 ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
         report += f"\n📅 **HARI:**\n"
