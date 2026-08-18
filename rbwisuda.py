@@ -8,7 +8,8 @@ import os
 import json
 import logging
 import io
-
+import sqlite3
+import asyncio
 import requests
 from datetime import datetime, timedelta
 from collections import Counter
@@ -87,7 +88,29 @@ def save_data():
 financial_data = load_data()
 
 
-# --- FUNGSI INTEGRASI KLEDO ---
+# ==========================================
+# SETUP DATABASE SQLITE
+# ==========================================
+def init_db():
+    conn = sqlite3.connect('kledo_invoices.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS invoices (
+            invoice_id INTEGER PRIMARY KEY,
+            ref_number TEXT,
+            contact_name TEXT,
+            amount REAL,
+            products TEXT,
+            created_time TEXT,
+            raw_data TEXT
+        )
+    ''')
+    conn.commit()
+    return conn
+
+# ==========================================
+# FUNGSI INTEGRASI KLEDO (DATABASE + API)
+# ==========================================
 def create_kledo_session():
     session = requests.Session()
     payload = {
@@ -113,47 +136,116 @@ def create_kledo_session():
         logging.error(f"Kledo Login Error: {e}")
         return None
 
-def run_kledo_analysis():
+def run_kledo_analysis_pipeline():
+    """Menangani Login, Tarik Data API, Simpan SQLite DB, & Analisis Peak Hour."""
+    # --- 1. PROSES LOGIN ---
+    print("\n⏳ [1/3] Memulai proses login ke Kledo...")
     session = create_kledo_session()
     if not session:
+        print("❌ NOTIF: Login Gagal!")
         return "❌ Gagal login ke Kledo. Periksa kembali email/password di .env!"
+    print("✅ NOTIF: Login Berhasil!")
     
-    url = f"{API_HOST}/finance/invoices?date_from=2026-08-01&date_to=2026-08-30&per_page=100"
+    # --- 2. AMBIL LIST INVOICE ---
+    date_from, date_to = "2026-08-01", "2026-08-30"
+    print(f"⏳ [2/3] Mengambil data invoice dari {date_from} s/d {date_to}...")
+    url = f"{API_HOST}/finance/invoices?date_from={date_from}&date_to={date_to}&contact_id=1&per_page=100"
+    
     try:
         resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP})
         resp.raise_for_status()
         data = resp.json().get("data", {}).get("data", [])
         
         if not data:
-            return "⚠️ Tidak ada data invoice ditemukan dalam rentang tanggal tersebut."
+            print("⚠️ NOTIF: Tidak ada data invoice POS Customer ditemukan.")
+            return "⚠️ Tidak ada data invoice POS Customer ditemukan dalam rentang tanggal tersebut."
+        print(f"✅ NOTIF: Berhasil mendapatkan {len(data)} invoice dari server Kledo.")
+    except Exception as e:
+        print(f"❌ NOTIF: Gagal mengambil data invoice! Error: {e}")
+        return f"❌ Error saat mengambil data Kledo: {e}"
         
+    # --- 3. SIMPAN KE DATABASE & ANALISIS ---
+    print("⏳ [3/3] Memulai proses penyimpanan ke database & Analisis...")
+    try:
+        db_conn = init_db()
+        cursor = db_conn.cursor()
+        saved_count = 0
         hour_list = []
+        
         for inv in data:
+            # Pastikan hanya POS Customer
+            contact = inv.get("contact", {})
+            c_id = contact.get("id")
+            c_name = contact.get("name")
+            
+            if c_id != 1 and c_name != "POS Customer":
+                continue
+                
+            inv_id = inv.get("id")
+            ref_number = inv.get("ref_number")
+            amount = inv.get("amount")
+            
+            # Waktu Dibuat
             created_at = (
-                inv.get("created_at")
-                or inv.get("log", {}).get("action", {}).get("created_at")
+                inv.get("log", {}).get("action", {}).get("created_at")
+                or inv.get("created_at")
                 or inv.get("trans_date")
             )
+            
+            # Data Produk
+            items = inv.get("items", [])
+            product_list = []
+            for item in items:
+                prod_name = item.get("product_name") or "Produk Tanpa Nama"
+                qty = item.get("qty", 1)
+                product_list.append(f"{prod_name} (x{qty})")
+            products_str = ", ".join(product_list)
+            
+            # Data Raw (JSON)
+            raw_data_json = json.dumps(inv)
+            
+            # Insert ke Database
+            cursor.execute('''
+                INSERT OR REPLACE INTO invoices 
+                (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (inv_id, ref_number, c_name, amount, products_str, created_at, raw_data_json))
+            
+            saved_count += 1
+            
+            # Parsing Jam untuk Analisis
             if created_at:
                 try:
-                    if " " in created_at:
-                        dt_str = created_at[:19]
-                        fmt = "%Y-%m-%d %H:%M:%S" if len(dt_str) == 19 else "%Y-%m-%d %H:%M"
-                        dt = datetime.strptime(dt_str, fmt)
-                        hour_list.append(dt.hour)
-                except ValueError:
+                    dt_str = created_at.strip()
+                    if " " in dt_str:
+                        time_part = dt_str.split(" ")[1]
+                        hour = int(time_part.split(":")[0])
+                        hour_list.append(hour)
+                except (ValueError, IndexError):
                     continue
+                    
+        db_conn.commit()
+        db_conn.close()
+        print(f"✅ NOTIF: Berhasil menyimpan {saved_count} invoice ke dalam database (tabel 'invoices').")
+        print("🎉 Proses Selesai!\n")
         
+        # Buat Report Akhir Untuk Bot Telegram
         counts = Counter(hour_list).most_common()
-        report = "📊 **PEAK HOURS ANALYTICS (KLEDO)**\n\n"
+        report = "📊 **PEAK HOURS ANALYTICS (POS CUSTOMER)**\n"
+        report += f"🗓️ `Periode: 01 - 30 Agustus 2026`\n"
+        report += f"💾 `Data Tersimpan di Database: {saved_count} Invoices`\n\n"
+        
         if counts:
             for h, c in sorted(counts):
                 report += f"├ Jam {h:02d}:00 ➔ {c} Transaksi\n"
         else:
-            report += "⚠️ Belum ada data jam transaksi spesifik yang valid."
+            report += "⚠️ Belum ada data jam transaksi spesifik yang valid untuk POS Customer."
+        
         return report
+
     except Exception as e:
-        return f"❌ Error saat mengambil data Kledo: {e}"
+        print(f"❌ NOTIF: Gagal menyimpan data ke database! Error: {e}")
+        return f"❌ Error saat menyimpan/menganalisis data: {e}"
 
 
 # --- FUNGSI HELPER & KEYBOARD ---
@@ -609,8 +701,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await generate_and_send_chart(query, context, "sales_nota")
         
     elif data == "kledo_analysis":
-        await query.edit_message_text("⏳ Sedang menyambungkan ke Kledo & menganalisis data...", parse_mode="Markdown")
-        result_text = run_kledo_analysis()
+        await query.edit_message_text("⏳ Sedang menyambungkan ke Kledo, mengambil data, & menyimpan ke database...", parse_mode="Markdown")
+        
+        # MENGGUNAKAN ASYNCIO THREAD AGAR BOT TIDAK STUCK
+        result_text = await asyncio.to_thread(run_kledo_analysis_pipeline)
+        
         keyboard = [[InlineKeyboardButton("⬅️ Kembali ke Menu Utama", callback_data="main_menu")]]
         await query.edit_message_text(result_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -675,8 +770,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Command khusus untuk trigger analisis kledo lewat chat text (/kledo)
 async def kledo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Sedang menyambungkan ke Kledo & menganalisis data...")
-    result_text = run_kledo_analysis()
+    await update.message.reply_text("⏳ Sedang menyambungkan ke Kledo, mengambil data, & menyimpan ke database...")
+    
+    # MENGGUNAKAN ASYNCIO THREAD AGAR BOT TIDAK STUCK
+    result_text = await asyncio.to_thread(run_kledo_analysis_pipeline)
+    
     await update.message.reply_text(result_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 
