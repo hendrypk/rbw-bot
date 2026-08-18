@@ -98,40 +98,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "view_report":
         await query.edit_message_text(generate_report_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+    
     elif data == "main_menu":
         await start(update, context)
+        
     elif data == "menu_chart":
         keyboard = [[InlineKeyboardButton("📈 Grafik Balance", callback_data="chart_balance")], [InlineKeyboardButton("🛍️ Menu Grafik Sales", callback_data="menu_chart_sales")], [InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]
         await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        
     elif data == "menu_chart_sales":
         keyboard = [[InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")], [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]]
         await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        
     elif data == "chart_balance": await generate_and_send_chart(query, context, "balance")
     elif data == "chart_sales_rupiah": await generate_and_send_chart(query, context, "sales_rupiah")
     elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
     elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
     
-    # Handler Tombol Peak & Low Season
-elif data in ["peak_season", "low_season"]:
+    elif data in ["peak_season", "low_season"]:
         mode = "peak" if data == "peak_season" else "low"
-        await query.edit_message_text(f"⏳ Menganalisis data...", parse_mode="Markdown")
-        
-        # Ambil report
+        title = "Peak Season" if mode == "peak" else "Low Season"
+        await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
         report = await asyncio.to_thread(analyze_season_from_db, mode)
-        
-        # FIX: Escape teks report agar karakter khusus tidak error di Telegram
-        # Kita hanya escape isi report, bukan karakter Markdown yang kita buat sendiri
-        safe_report = escape_markdown(report)
-        
-        # Kirim dengan Markdown
-        await query.edit_message_text(
-            safe_report, 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), 
-            parse_mode="Markdown"
-        )
-    # Handler Tombol Sync Data
+        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+
     elif data == "sync_data":
-        await query.edit_message_text("⏳ Sedang mengecek & menyinkronkan data terbaru dari Kledo...\nMohon tunggu beberapa detik.", parse_mode="Markdown")
+        await query.edit_message_text("⏳ Sedang menyinkronkan data dari Kledo...", parse_mode="Markdown")
         report = await asyncio.to_thread(sync_missing_invoices)
         await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
 
@@ -139,7 +131,8 @@ elif data in ["peak_season", "low_season"]:
         await query.edit_message_text("🔄 **MENU TRANSFER SALDO**\nContoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]))
     
     elif data.startswith("confirm_save_"):
-        target, current_date = data.replace("confirm_save_", ""), financial_data["date"]
+        target = data.replace("confirm_save_", "")
+        current_date = financial_data["date"]
         if current_date not in financial_data["history"]: financial_data["history"][current_date] = {"balance": {}, "sales": {}}
         if target in ["balance", "all"]:
             tot_e = financial_data["seabank"] + financial_data["jago"] + financial_data["cash_tunai"]
@@ -148,22 +141,19 @@ elif data in ["peak_season", "low_season"]:
         if target in ["sales", "overview", "all"]:
             financial_data["history"][current_date]["sales"] = {ch: d_val.copy() for ch, d_val in financial_data["sales"].items()}
         save_data(financial_data)
-        await query.edit_message_text(f"✅ **ARSIP TANGGAL `{current_date}` BERHASIL DISIMPAN!**", parse_mode="Markdown")
+        await query.edit_message_text(f"✅ **ARSIP `{current_date}` DISIMPAN!**", parse_mode="Markdown")
+        
     elif data == "cancel_save":
-        await query.edit_message_text("❌ **Penyimpanan arsip dibatalkan.**", parse_mode="Markdown")
+        await query.edit_message_text("❌ **Dibatalkan.**", parse_mode="Markdown")
     
     elif data == "confirm_insert":
-        await query.edit_message_text("⏳ Memasukkan data ke database SQLite...")
+        await query.edit_message_text("⏳ Memasukkan data...")
         saved, err = await asyncio.to_thread(insert_temp_json_to_db)
-        if err:
-            await query.edit_message_text(err)
-        else:
-            await query.edit_message_text(f"✅ Berhasil! **{saved}** invoice telah disimpan ke database.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        await query.edit_message_text(err if err else f"✅ **{saved}** invoice disimpan.", parse_mode="Markdown", reply_markup=get_main_keyboard())
             
     elif data == "skip_insert":
-        if os.path.exists("temp_invoices.json"):
-            os.remove("temp_invoices.json")
-        await query.edit_message_text("❌ Proses dibatalkan. File JSON sementara dihapus.", reply_markup=get_main_keyboard())
+        if os.path.exists("temp_invoices.json"): os.remove("temp_invoices.json")
+        await query.edit_message_text("❌ Dibatalkan.", reply_markup=get_main_keyboard())
 
 async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
