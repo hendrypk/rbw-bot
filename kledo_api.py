@@ -248,13 +248,20 @@ def analyze_season_from_db(mode="peak"):
         t_sum = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).head(5)
         
         # ... [sisanya sama untuk menyusun report] ...
-                title = "🔥 PEAK" if mode == "peak" else "❄️ LOW"
-        report = f"📊 **ANALISIS {title} SEASON**\n\n🕒 **JAM:**\n"
-        for _, r in h_sum.iterrows(): report += f"- Jam {int(r.name):02d}:00 ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
-        report += f"\n📅 **HARI:**\n"
-        for _, r in d_sum.iterrows(): report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
-        report += f"\n📆 **TOP 5 TANGGAL:**\n"
-        for _, r in t_sum.iterrows(): report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
+        report = f"📊 **ANALISIS {title}**\n\n"
+        
+        report += f"🕒 **1. {'JAM SIBUK' if mode == 'peak' else 'JAM SEPI'}**\n"
+        for _, r in h_sum.iterrows(): 
+            report += f"- Jam {int(r.name):02d}:00 ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        
+        report += f"\n📅 **2. {'HARI SIBUK' if mode == 'peak' else 'HARI SEPI'}**\n"
+        for _, r in d_sum.iterrows(): 
+            report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
+        
+        report += f"\n📆 **3. TOP 5 {'TANGGAL TERAMAI' if mode == 'peak' else 'TANGGAL TERSEPI'}**\n"
+        for _, r in t_sum.iterrows(): 
+            report += f"- {r.name} ➔ {int(r.tx)} Tx | {int(r.items)} Porsi | Rp {int(r.omzet):,}\n"
         
         return report.replace(",", ".")
     except Exception as e:
