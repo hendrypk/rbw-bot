@@ -11,10 +11,13 @@ def get_main_keyboard():
         [InlineKeyboardButton("📈 Lihat Laporan", callback_data="view_report")],
         [InlineKeyboardButton("📊 Menu Grafik", callback_data="menu_chart")],
         [
-            InlineKeyboardButton("⏰ Peak Hour", callback_data="peak_hour"),
-            InlineKeyboardButton("📅 Peak Days", callback_data="peak_day")
+            InlineKeyboardButton("🔥 Peak Season", callback_data="peak_season"),
+            InlineKeyboardButton("❄️ Low Season", callback_data="low_season")
         ],
-        [InlineKeyboardButton("🔄 Transfer Saldo", callback_data="transfer_info")],
+        [
+            InlineKeyboardButton("🔄 Transfer Saldo", callback_data="transfer_info"),
+            InlineKeyboardButton("⚙️ Sync Data Kledo", callback_data="sync_data")
+        ],
         [InlineKeyboardButton("📖 Cara Pakai", callback_data="help_menu")],
     ])
 

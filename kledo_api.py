@@ -4,7 +4,7 @@ import requests
 import logging
 import os
 import pandas as pd
-from collections import Counter
+from datetime import datetime, timedelta
 from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
 from data import init_db
 
@@ -18,7 +18,6 @@ def create_kledo_session():
     session = requests.Session()
     login_url = f"{API_HOST}/authentication/singleLogin"
     
-    # Payload lengkap sesuai panduan Postman/Script Anda
     payload = {
         "email": EMAIL,
         "password": PASSWORD,
@@ -36,7 +35,6 @@ def create_kledo_session():
         'X-App': X_APP
     }
     
-    # Memasukkan cookie jika nama dan nilainya tersedia di .env
     cookies = {}
     if KLEDO_COOKIE_NAME and KLEDO_COOKIE_VALUE:
         cookies[KLEDO_COOKIE_NAME] = KLEDO_COOKIE_VALUE
@@ -44,18 +42,14 @@ def create_kledo_session():
     try:
         logging.info("Mengirim request login ke Kledo dengan payload & cookie...")
         response = session.post(login_url, json=payload, headers=headers, cookies=cookies, timeout=15)
-        
-        # Cek jika ada error HTTP (401, 500, dll)
         response.raise_for_status()
         res_data = response.json()
         
         logging.info("🎉 LOGIN BERHASIL!")
         
-        # Mengambil access_token untuk request selanjutnya (seperti fetch invoices)
         access_token = res_data.get("data", {}).get("data", {}).get("access_token")
         
         if access_token:
-            # Update header sesi agar request ke /finance/invoices menggunakan token yang valid
             session.headers.update({
                 "Content-Type": "application/json",
                 "Accept": "application/json",
@@ -64,7 +58,6 @@ def create_kledo_session():
                 "Authorization": f"Bearer {access_token}"
             })
         else:
-            # Jika Kledo menggunakan cookie untuk otorisasi, setel header dasar
             session.headers.update(headers)
             
         return session
@@ -144,95 +137,159 @@ def insert_temp_json_to_db():
     except Exception as e:
         return 0, f"❌ Error Database: {e}"
 
-def analyze_peak_hours_from_db():
-    """Tahap 3: Analisis Peak Hour & Peak Day menggunakan Pandas, lalu simpan ke database SQLite."""
+def sync_missing_invoices():
     try:
         db_conn = init_db()
-        query = "SELECT created_time, amount FROM invoices"
-        df = pd.read_sql(query, db_conn)
+        cursor = db_conn.cursor()
         
-        if df.empty or "created_time" not in df.columns:
-            db_conn.close()
-            return "⚠️ Database masih kosong atau kolom waktu tidak ditemukan."
+        # 1. Cari tanggal transaksi terakhir
+        cursor.execute("SELECT MAX(substr(created_time, 1, 10)) FROM invoices")
+        result = cursor.fetchone()
+        latest_db_date_str = result[0] if result and result[0] else None
+        
+        today = datetime.now().date()
+        start_date = datetime.strptime(latest_db_date_str, "%Y-%m-%d").date() if latest_db_date_str else today - timedelta(days=7)
             
-        df['dt'] = pd.to_datetime(df['created_time'], errors='coerce')
-        df = df.dropna(subset=['dt'])
+        dates_to_check = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") 
+                          for i in range((today - start_date).days + 1)]
+            
+        if not dates_to_check:
+            return "✅ Database sudah up-to-date."
+
+        session = create_kledo_session()
+        if not session:
+            return "❌ Gagal login ke Kledo."
+            
+        report_lines = []
+        total_inserted = 0
+        total_updated = 0
+        
+        for check_date in dates_to_check:
+            url = f"{API_HOST}/finance/invoices?date_from={check_date}&date_to={check_date}&contact_id=1&per_page=100"
+            try:
+                resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
+                resp.raise_for_status()
+                data = resp.json().get("data", {}).get("data", [])
+                
+                for inv in data:
+                    inv_id = inv.get("id")
+                    # Pastikan data lengkap
+                    ref_number = inv.get("ref_number")
+                    c_name = inv.get("contact", {}).get("name")
+                    amount = inv.get("amount")
+                    created_at = inv.get("log", {}).get("action", {}).get("created_at") or inv.get("created_at") or inv.get("trans_date")
+                    items = inv.get("items", [])
+                    products_str = ", ".join([f"{i.get('product_name')} (x{i.get('qty', 1)})" for i in items])
+                    raw_data_json = json.dumps(inv)
+                    
+                    # 2. Cek apakah invoice sudah ada
+                    cursor.execute("SELECT raw_data FROM invoices WHERE invoice_id = ?", (inv_id,))
+                    row = cursor.fetchone()
+                    
+                    if not row:
+                        # INSERT: Jika belum ada
+                        cursor.execute('''INSERT INTO invoices (invoice_id, ref_number, contact_name, amount, products, created_time, raw_data)
+                                          VALUES (?, ?, ?, ?, ?, ?, ?)''', (inv_id, ref_number, c_name, amount, products_str, created_at, raw_data_json))
+                        total_inserted += 1
+                    else:
+                        # UPDATE: Jika sudah ada, bandingkan raw_data untuk memastikan kelengkapan
+                        if row[0] != raw_data_json:
+                            cursor.execute('''UPDATE invoices SET ref_number=?, contact_name=?, amount=?, products=?, created_time=?, raw_data=? 
+                                              WHERE invoice_id=?''', (ref_number, c_name, amount, products_str, created_at, raw_data_json, inv_id))
+                            total_updated += 1
+                        
+                db_conn.commit()
+                
+            except Exception as e:
+                report_lines.append(f"📅 `{check_date}`: ❌ Error ({e})")
+                
+        db_conn.close()
+        
+        if total_inserted == 0 and total_updated == 0:
+            return "✅ Database sudah sinkron. Tidak ada perubahan."
+            
+        return f"🔄 **SINKRONISASI SELESAI**\n\n✅ Baru: {total_inserted}\n✏️ Diperbarui: {total_updated}\n\nTotal sinkronisasi sukses."
+        
+    except Exception as e:
+        return f"❌ Error sync: {e}"
+
+def analyze_season_from_db(mode="peak"):
+    """
+    Analisis menggunakan jam dari log.action.created_at sesuai struktur JSON Kledo.
+    """
+    try:
+        db_conn = init_db()
+        # Mengambil raw_data agar bisa parsing JSON log
+        query = "SELECT amount, raw_data FROM invoices"
+        df = pd.read_sql(query, db_conn)
+        db_conn.close()
         
         if df.empty:
-            db_conn.close()
-            return "⚠️ Tidak ada data waktu transaksi yang valid di database."
-            
-        df['hour'] = df['dt'].dt.hour
-        df['day_name'] = df['dt'].dt.day_name()
+            return "⚠️ Database masih kosong."
+
+        # Fungsi helper untuk ekstrak waktu dari JSON raw_data
+        def get_datetime_from_raw(raw_str):
+            try:
+                data = json.loads(raw_str)
+                # Jalur ambil: log -> action -> created_at
+                created_at_str = data.get("log", {}).get("action", {}).get("created_at")
+                if created_at_str:
+                    return pd.to_datetime(created_at_str)
+                return None
+            except:
+                return None
+
+        # Fungsi helper untuk hitung total porsi (qty)
+        def get_total_items(raw_str):
+            try:
+                data = json.loads(raw_str)
+                return sum(float(item.get('qty', 1)) for item in data.get('items', []))
+            except:
+                return 0
+
+        # Terapkan ekstraksi
+        df['dt'] = df['raw_data'].apply(get_datetime_from_raw)
+        df = df.dropna(subset=['dt'])
+        df['total_items'] = df['raw_data'].apply(get_total_items)
         
+        # Ekstrak fitur waktu
+        df['hour'] = df['dt'].dt.hour
+        df['date'] = df['dt'].dt.date
         day_mapping = {
             'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu',
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
         }
-        df['day_id'] = df['day_name'].map(day_mapping)
+        df['day_id'] = df['dt'].dt.day_name().map(day_mapping)
         
-        # 1. Agregasi Peak Hour
-        hour_summary = df.groupby('hour').agg(
-            total_transaksi=('amount', 'count'),
-            total_omzet=('amount', 'sum')
-        ).reset_index()
+        # Agregasi (sama seperti sebelumnya)
+        hour_summary = df.groupby('hour').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
+        day_summary = df.groupby('day_id').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
+        date_summary = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).reset_index()
         
-        # 2. Agregasi Peak Day
-        day_order = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
-        day_summary = df.groupby('day_id').agg(
-            total_transaksi=('amount', 'count'),
-            total_omzet=('amount', 'sum')
-        ).reindex(day_order).reset_index()
+        # Sorting mode
+        asc_order = True if mode == "low" else False
+        hour_summary = hour_summary[hour_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order)
+        day_summary = day_summary[day_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order)
+        date_summary = date_summary[date_summary['tx'] > 0].sort_values(by=['tx', 'omzet'], ascending=asc_order).head(5)
         
-        cursor = db_conn.cursor()
+        # Susun laporan
+        title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
+        report = f"📊 **ANALISIS {title}**\n\n"
         
-        # Buat tabel penyimpanan peak analytics jika belum ada
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS peak_analytics (
-                period_type TEXT,
-                period_key TEXT PRIMARY KEY,
-                total_transactions INTEGER,
-                total_omzet REAL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Simpan hasil Peak Hour ke DB
-        for _, row in hour_summary.iterrows():
-            h_key = f"Jam {int(row['hour']):02d}:00"
-            cursor.execute('''
-                INSERT OR REPLACE INTO peak_analytics (period_type, period_key, total_transactions, total_omzet, updated_at)
-                VALUES ('HOUR', ?, ?, ?, datetime('now'))
-            ''', (h_key, int(row['total_transaksi']), float(row['total_omzet'])))
+        report += f"🕒 **1. {'JAM SIBUK' if mode == 'peak' else 'JAM SEPI'}**\n"
+        for _, r in hour_summary.iterrows():
+            report += f"- Jam {int(r['hour']):02d}:00 ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
             
-        # Simpan hasil Peak Day ke DB
-        for _, row in day_summary.dropna(subset=['total_transaksi']).iterrows():
-            d_key = row['day_id']
-            cursor.execute('''
-                INSERT OR REPLACE INTO peak_analytics (period_type, period_key, total_transactions, total_omzet, updated_at)
-                VALUES ('DAY', ?, ?, ?, datetime('now'))
-            ''', (d_key, int(row['total_transaksi']), float(row['total_omzet'])))
+        report += f"\n📅 **2. {'HARI SIBUK' if mode == 'peak' else 'HARI SEPI'}**\n"
+        for _, r in day_summary.iterrows():
+            report += f"- {r['day_id']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
             
-        db_conn.commit()
-        db_conn.close()
-        
-        # Susun Laporan Teks
-        report = "📊 **ANALISIS PEAK SESSION (PANDAS & DB)**\n\n"
-        
-        report += "🕒 **1. PEAK HOUR (JAM SIBUK)**\n"
-        for _, row in hour_summary.sort_values(by='total_transaksi', ascending=False).iterrows():
-            h = int(row['hour'])
-            tx = int(row['total_transaksi'])
-            omz = row['total_omzet']
-            report += f"- Jam {h:02d}:00 -> {tx} Transaksi (Rp {omz:,.0f})\n".replace(",", ".")
-            
-        report += "\n📅 **2. PEAK DAY (HARI SIBUK)**\n"
-        for _, row in day_summary.dropna(subset=['total_transaksi']).iterrows():
-            d = row['day_id']
-            tx = int(row['total_transaksi'])
-            omz = row['total_omzet']
-            report += f"- {d}: {tx} Transaksi (Rp {omz:,.0f})\n".replace(",", ".")
+        report += f"\n📆 **3. TOP 5 {'TANGGAL TERAMAI' if mode == 'peak' else 'TANGGAL TERSEPI'}**\n"
+        for _, r in date_summary.iterrows():
+            tgl = r['date'].strftime("%d %b %Y")
+            report += f"- {tgl} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {r['omzet']:,.0f}\n".replace(",", ".")
             
         return report
+        
     except Exception as e:
-        return f"❌ Error analisis & simpan DB: {e}"
+        return f"❌ Error analisis: {e}"

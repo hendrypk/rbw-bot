@@ -1,12 +1,16 @@
 import os
 import asyncio
 import shlex
+import datetime
+import pytz
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import TELEGRAM_TOKEN, GROUP_CHAT_ID
 from data import financial_data, save_data
-from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_peak_hours_from_db
+
+# Pastikan kledo_api.py Anda sudah menggunakan fungsi analyze_season_from_db yang baru
+from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_season_from_db, sync_missing_invoices
 from bot_ui import (
     get_main_keyboard, generate_report_text, parse_wallet_key, 
     parse_shortcut_range, generate_and_send_chart
@@ -87,12 +91,6 @@ async def save_archive_command(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [[InlineKeyboardButton("✅ OKE SAVE", callback_data=f"confirm_save_{target}"), InlineKeyboardButton("❌ CANCEL", callback_data="cancel_save")]]
     await update.message.reply_text(f"📌 **KONFIRMASI ARSIP**\n🗓️ `{current_date}` | 📂 `{target.upper()}`\nSimpan?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# FIX 1: Memperbaiki referensi fungsi yang hilang
-async def kledo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Menganalisis data dari database lokal...")
-    result_text = await asyncio.to_thread(analyze_peak_hours_from_db)
-    await update.message.reply_text(result_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -113,9 +111,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
     elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
     
-    elif data in ["peak_hour", "peak_day"]:
-        await query.edit_message_text("⏳ Menganalisis peak session dari database...", parse_mode="Markdown")
-        report = await asyncio.to_thread(analyze_peak_hours_from_db)
+    # Handler Tombol Peak & Low Season
+    elif data in ["peak_season", "low_season"]:
+        mode = "peak" if data == "peak_season" else "low"
+        title = "Peak Season" if mode == "peak" else "Low Season"
+        await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
+        report = await asyncio.to_thread(analyze_season_from_db, mode)
+        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+
+    # Handler Tombol Sync Data
+    elif data == "sync_data":
+        await query.edit_message_text("⏳ Sedang mengecek & menyinkronkan data terbaru dari Kledo...\nMohon tunggu beberapa detik.", parse_mode="Markdown")
+        report = await asyncio.to_thread(sync_missing_invoices)
         await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
 
     elif data == "transfer_info":
@@ -148,7 +155,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove("temp_invoices.json")
         await query.edit_message_text("❌ Proses dibatalkan. File JSON sementara dihapus.", reply_markup=get_main_keyboard())
 
-# 1. Command untuk ambil data ke JSON
 async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not context.args:
@@ -175,41 +181,48 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}")
 
-# FIX 2: Menggunakan context.bot alih-alih membuat session bot baru
-async def peak_hour_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Menganalisis peak session (hour & day) dari database...")
-    report = await asyncio.to_thread(analyze_peak_hours_from_db)
-    
-    # Balas pesan ke user yang mengetik command
+async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Sedang mengecek & menyinkronkan data terbaru dari Kledo ke database...\nProses ini mungkin memakan waktu.", parse_mode="Markdown")
+    report = await asyncio.to_thread(sync_missing_invoices)
     await update.message.reply_text(report, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+# --- FUNGSI CRON JOB HARIAN (Jam 07:00 WIB) ---
+async def daily_sync_job(context: ContextTypes.DEFAULT_TYPE):
+    print("Mengeksekusi Auto-Sync Harian...")
+    report = await asyncio.to_thread(sync_missing_invoices)
     
-    # Kirim otomatis sebagai notifikasi ke GROUP_CHAT_ID menggunakan context.bot
     if GROUP_CHAT_ID:
         try:
             await context.bot.send_message(
                 chat_id=GROUP_CHAT_ID,
-                text=f"🔔 **NOTIFIKASI LAPORAN PEAK SESSION**\n\n{report}",
+                text=f"⏰ **AUTO-SYNC HARIAN (07:00 WIB)**\n\n{report}",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            print(f"❌ Gagal mengirim notifikasi ke grup: {e}")
+            print(f"❌ Gagal mengirim notifikasi auto-sync ke grup: {e}")
 
 def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
+    # Mendaftarkan Scheduler / Cron Job pada Jam 07:00 WIB setiap hari
+    wib_timezone = pytz.timezone('Asia/Jakarta')
+    target_time = datetime.time(hour=7, minute=0, second=0, tzinfo=wib_timezone)
+    app.job_queue.run_daily(daily_sync_job, time=target_time)
+    
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("se", set_efektif))
     app.add_handler(CommandHandler("sne", set_nonefektif))
     app.add_handler(CommandHandler("tf", transfer_saldo))
     app.add_handler(CommandHandler("save", save_archive_command))
-    app.add_handler(CommandHandler("kledo", kledo_command))
     app.add_handler(CommandHandler("get_invoice", get_invoice_command))
-    app.add_handler(CommandHandler("peak", peak_hour_command))
+    app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Keuangan & Analisis Kledo sedang berjalan...")
+    print("⏰ Cron Job Sinkronisasi Harian disetel pada pukul 07:00 WIB.")
     app.run_polling()
 
 if __name__ == "__main__":
