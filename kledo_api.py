@@ -231,7 +231,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
         if channel != "all":
             df = df[df['contact_name'].str.lower() == channel.lower()]
             if df.empty:
-                return f"⚠️ Tidak ada data untuk channel <b>{channel.capitalize()}</b>."
+                return f"⚠️ Tidak ada data untuk channel {channel.capitalize()}."
 
         def parse_row(raw):
             try:
@@ -277,55 +277,50 @@ def analyze_season_from_db(mode="peak", channel="all"):
             items=('total_items', 'sum')
         ).sort_values('omzet', ascending=False).reset_index()
 
-        title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
+        title = "PEAK SEASON (TERAMAI)" if mode == "peak" else "LOW SEASON (TERSEPI)"
         ch_label = channel.capitalize() if channel != "all" else "Semua Channel"
         
-        # Menggunakan tag HTML <b> dan <i> agar rapi dan aman
-        report = f"📊 <b>{title}</b>\n"
-        report += f"📌 Filter Channel: <b>{ch_label}</b>\n"
-        report += f"──────────────────────\n\n"
+        # Menggunakan format tanpa simbol markdown rumit agar aman dari error parsing
+        report = f"ANALISIS {title}\nFilter: {ch_label}\n\n"
         
         if channel == "all":
-            report += "🛍️ <b>1. REKAP PER CHANNEL PENJUALAN</b>\n"
+            report += "1. REKAP PER CHANNEL PENJUALAN\n"
             for _, r in c_sum.iterrows():
                 c_name = r['contact_name'] or "Lainnya"
-                report += f"▪️ {c_name}\n"
-                report += f"   └ <code>{int(r['tx'])} Tx</code> | <code>{int(r['items'])} Porsi</code> | <b>Rp {int(r['omzet']):,}</b>\n".replace(",", ".")
+                report += f"- {c_name}: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += "\n"
 
-        report += f"🕒 <b>{'1' if channel != 'all' else '2'}. JAM SIBUK & RATA-RATA</b>\n"
-        for _, r in h_sum.head(4).iterrows():
+        report += f"2. JAM SIBUK & RATA-RATA\n"
+        for _, r in h_sum.head(5).iterrows():
             divisor = r['active_days'] if r['active_days'] > 0 else 1
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
             
-            report += f"▪️ <b>Jam {int(r['hour']):02d}:00</b>\n"
-            report += f"   Total: <code>{int(r['tx'])} Tx</code> | <code>{int(r['items'])} Porsi</code> | <b>Rp {int(r['omzet']):,}</b>\n".replace(",", ".")
-            report += f"   Rata²: ⚡ <code>{avg_tx:.1f} Tx</code> | 📦 <code>{avg_porsi:.1f} Porsi</code> | 💰 <b>Rp {int(avg_omzet):,}</b>\n".replace(",", ".")
+            report += f"• Jam {int(r['hour']):02d}:00\n"
+            report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+            report += f"  Rata-rata: {avg_tx:.1f} Tx | {avg_porsi:.1f} Porsi | Rp {int(avg_omzet):,}\n".replace(",", ".")
             
-        report += f"\n📅 <b>{'2' if channel != 'all' else '3'}. HARI SIBUK & RATA-RATA</b>\n"
+        report += f"\n3. HARI SIBUK & RATA-RATA\n"
         for _, r in d_sum.head(3).iterrows():
             divisor = max(r['active_weeks'], 1)
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
             
-            report += f"▪️ <b>{r['day_id']}</b>\n"
-            report += f"   Total: <code>{int(r['tx'])} Tx</code> | <code>{int(r['items'])} Porsi</code> | <b>Rp {int(r['omzet']):,}</b>\n".replace(",", ".")
-            report += f"   Rata²: ⚡ <code>{avg_tx:.1f} Tx/h</code> | 📦 <code>{avg_porsi:.1f} P/h</code> | 💰 <b>Rp {int(avg_omzet):,}</b>\n".replace(",", ".")
+            report += f"• {r['day_id']}\n"
+            report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+            report += f"  Rata-rata: {avg_tx:.1f} Tx/hari | {avg_porsi:.1f} Porsi/hari | Rp {int(avg_omzet):,}\n".replace(",", ".")
         
-        report += f"\n──────────────────────"
-        
-        # Ambil rekomendasi AI
+        # Tambahkan rekomendasi AI yang sudah dibersihkan
         ai_insights = get_ai_recommendation(report, mode)
         
         return report + "\n" + ai_insights
     except Exception as e:
-        return f"❌ <b>Error:</b> {str(e)}"
+        return f"❌ Error: {str(e)}"
 
 def escape_markdown_ai(text):
-    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""
+    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""git a
     escape_chars = ['_', '*', '`', '[', ']']
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
@@ -340,11 +335,15 @@ def clean_markdown_for_telegram(text):
     
 
 def get_ai_recommendation(analysis_report, mode="peak"):
-    """Menggunakan Gemini AI dengan format HTML agar aman dikirim ke Telegram."""
+    """Menggunakan Gemini AI dengan sistem cadangan (fallback) otomatis jika terjadi gangguan."""
     if not GEMINI_API_KEY:
-        return "💡 <b>Rekomendasi AI:</b> (API Key belum diatur)"
+        return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
     
     models_to_try = [
+        'gemini-3.7-flash',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
         'gemini-3.6-flash-high', 
         'gemini-3.6-flash-medium', 
         'gemini-3.6-flash-low', 
@@ -355,12 +354,12 @@ def get_ai_recommendation(analysis_report, mode="peak"):
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     prompt = f"""
-    Anda adalah seorang konsultan bisnis F&B yang ahli. 
-    Berikut adalah data analisis operasional toko kami:
+    Anda adalah seorang konsultan bisnis F&B (Kuliner) yang ahli. 
+    Berikut adalah data analisis operasional harian berdasarkan database toko kami:
     
     {analysis_report}
     
-    Berikan 3 rekomendasi taktis, singkat, dan actionable untuk pemilik usaha berdasarkan data di atas. Gunakan bahasa Indonesia yang profesional namun santai. Format output menggunakan teks biasa dengan poin-poin (bullet points), JANGAN gunakan simbol markdown seperti bintang (*) atau garis bawah (_) sama sekali.
+    Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
     """
     
     for model_name in models_to_try:
@@ -371,10 +370,9 @@ def get_ai_recommendation(analysis_report, mode="peak"):
                 config={}
             )
             if response and response.text:
-                # Bersihkan tag liar jika ada, bungkus dengan format HTML Telegram
-                clean_text = response.text.replace('*', '').replace('__', '')
-                return f"\n🤖 <b>AI BUSINESS INSIGHTS & STRATEGY:</b>\n{clean_text}"
+                safe_text = response.text.replace('*', '•') 
+                return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{safe_text}"
         except Exception as e:
             continue
             
-    return "\n⚠️ <i>Gagal memuat rekomendasi AI (Server sibuk).</i>"
+    return "\n⚠️ Gagal memuat rekomendasi AI: Semua model cadangan sedang sibuk (503 Unavailable). Silakan coba beberapa saat lagi."
