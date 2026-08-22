@@ -219,7 +219,7 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         await update.message.reply_text(
             f"✅ Berhasil menarik **{count}** invoice untuk tanggal `{target_date}` dan disimpan ke file sementara.\n\nApakah Anda ingin memasukkannya ke database?",
-            parse_mode="HTML",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
