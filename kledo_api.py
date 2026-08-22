@@ -221,7 +221,8 @@ def sync_missing_invoices(query=None):
 def analyze_season_from_db(mode="peak"):
     try:
         db_conn = init_db()
-        df = pd.read_sql("SELECT amount, raw_data FROM invoices", db_conn)
+        # Mengambil contact_name bersama amount dan raw_data
+        df = pd.read_sql("SELECT contact_name, amount, raw_data FROM invoices", db_conn)
         db_conn.close()
         
         if df.empty:
@@ -249,28 +250,66 @@ def analyze_season_from_db(mode="peak"):
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
         })
         
+        # Hitung total unik hari untuk mencari rata-rata harian (average per peak/low day)
+        total_unique_days = df['date'].nunique() or 1
+        
         asc = (mode == "low")
-        # FIXED: Menambahkan reset_index() agar nama variabel yang dipanggil saat loop sesuai dengan DataFramenya
-        h_sum = df.groupby('hour').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
-        d_sum = df.groupby('day_id').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
-        t_sum = df.groupby('date').agg(tx=('amount', 'count'), omzet=('amount', 'sum'), items=('total_items', 'sum')).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).head(5).reset_index()
         
+        # 1. Agregasi Berdasarkan Jam (dengan Rata-rata per hari kemunculan jam tersebut)
+        h_sum = df.groupby('hour').agg(
+            tx=('amount', 'count'), 
+            omzet=('amount', 'sum'), 
+            items=('total_items', 'sum'),
+            active_days=('date', 'nunique')
+        ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
+        
+        # 2. Agregasi Berdasarkan Hari (Senin, Selasa, dll)
+        d_sum = df.groupby('day_id').agg(
+            tx=('amount', 'count'), 
+            omzet=('amount', 'sum'), 
+            items=('total_items', 'sum'),
+            active_weeks=('date', lambda x: x.nunique() / 7) # Perkiraan jumlah kemunculan hari tersebut
+        ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
+        
+        # 3. Agregasi Berdasarkan Channel (Contact Name)
+        c_sum = df.groupby('contact_name').agg(
+            tx=('amount', 'count'), 
+            omzet=('amount', 'sum'), 
+            items=('total_items', 'sum')
+        ).sort_values('omzet', ascending=False).reset_index()
+
         title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
-        report = f"📊 **ANALISIS {title}**\n\n"
+        report = f"📊 **ANALISIS PERFORMA & {title}**\n\n"
         
-        report += f"🕒 **1. {'JAM SIBUK' if mode == 'peak' else 'JAM SEPI'}**\n"
-        # FIXED: Menggunakan variabel h_sum, d_sum, t_sum
-        for _, r in h_sum.iterrows():
-            report += f"- Jam {int(r['hour']):02d}:00 ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
+        # Bagian Per Channel Penjualan
+        report += "🛍️ **1. REKAP PER CHANNEL PENJUALAN**\n"
+        for _, r in c_sum.iterrows():
+            c_name = r['contact_name'] or "Lainnya"
+            report += f"🔹 *{c_name}* ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             
-        report += f"\n📅 **2. {'HARI SIBUK' if mode == 'peak' else 'HARI SEPI'}**\n"
-        for _, r in d_sum.iterrows():
-            report += f"- {r['day_id']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
+        report += f"\n🕒 **2. {'JAM SIBUK & RATA-RATA' if mode == 'peak' else 'JAM SEPI & RATA-RATA'}**\n"
+        for _, r in h_sum.head(5).iterrows():
+            # Hitung rata-rata per kemunculan jam tersebut
+            divisor = r['active_days'] if r['active_days'] > 0 else 1
+            avg_tx = r['tx'] / divisor
+            avg_porsi = r['items'] / divisor
+            avg_omzet = r['omzet'] / divisor
             
-        report += f"\n📆 **3. TOP 5 {'TANGGAL TERAMAI' if mode == 'peak' else 'TANGGAL TERSEPI'}**\n"
-        for _, r in t_sum.iterrows():
-            report += f"- {r['date']} ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n"
+            report += f"• **Jam {int(r['hour']):02d}:00**\n"
+            report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+            report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx | 📦 {avg_porsi:.1f} Porsi | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
+            
+        report += f"\n📅 **3. {'HARI SIBUK & RATA-RATA' if mode == 'peak' else 'HARI SEPI & RATA-RATA'}**\n"
+        for _, r in d_sum.head(3).iterrows():
+            divisor = max(r['active_weeks'], 1)
+            avg_tx = r['tx'] / divisor
+            avg_porsi = r['items'] / divisor
+            avg_omzet = r['omzet'] / divisor
+            
+            report += f"• **{r['day_id']}**\n"
+            report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+            report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx/hari | 📦 {avg_porsi:.1f} Porsi/hari | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
         
-        return report.replace(",", ".")
+        return report
     except Exception as e:
         return f"❌ Error: {escape_markdown(str(e))}"
