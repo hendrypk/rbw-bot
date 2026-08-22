@@ -282,19 +282,18 @@ def analyze_season_from_db(mode="peak", channel="all"):
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
             items=('total_items', 'sum')
-            total_months_present=('year_month', 'nunique')
         ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
         
         # Petakan total kemunculan hari dari rentang tanggal kalender penuh
         d_sum['total_occurrences'] = d_sum['day_id'].map(total_days_in_range).fillna(1)
-        
+
         m2m_sum = df.groupby('day_number').agg(
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
             items=('total_items', 'sum'),
-            total_months_present=('date', lambda x: pd.Series([d.strftime('%Y-%m') for d in x]).nunique())
+            total_months_present=('year_month', 'nunique')
         ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
-
+        
         c_sum = df.groupby('contact_name').agg(
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
