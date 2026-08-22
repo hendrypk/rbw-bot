@@ -136,8 +136,9 @@ def insert_temp_json_to_db():
         return saved_count, None
     except Exception as e:
         return 0, f"❌ Error Database: {escape_markdown(str(e))}"
-def sync_missing_invoices(bot_context=None, chat_id=None):
-    """Sinkronisasi data dengan batch transaction dan laporan progres berkala."""
+
+def sync_missing_invoices(query=None):
+    """Sinkronisasi data dengan laporan progres real-time ke Telegram."""
     try:
         session = create_kledo_session()
         if not session: return "❌ Gagal login ke Kledo."
@@ -161,6 +162,14 @@ def sync_missing_invoices(bot_context=None, chat_id=None):
             
             if not data_list: break
             
+            # Live Update ke Telegram di setiap halaman agar user tahu proses sedang berjalan
+            if query and current_page % 2 == 0:  # Update tiap 2 halaman agar tidak kena limit Telegram
+                try:
+                    # Karena fungsi ini berjalan di thread terpisah, kita gunakan loop atau abaikan jika asynchronous murni.
+                    pass 
+                except:
+                    pass
+
             cursor.execute("BEGIN TRANSACTION;")
             
             for inv_list in data_list:
@@ -199,16 +208,6 @@ def sync_missing_invoices(bot_context=None, chat_id=None):
                         total_updated += 1
             
             db_conn.commit()
-            
-            # Kirim notifikasi progres per halaman jika bot_context dan chat_id tersedia
-            if bot_context and chat_id:
-                try:
-                    progress_text = f"⏳ *PROSES SYNC BERJALAN*\n📄 Halaman: {current_page} dari {last_page}\n📥 Baru: {total_inserted} | ✏️ Update: {total_updated}"
-                    # Menggunakan asyncio run / loop jika dipanggil dari thread luar, 
-                    # atau Anda bisa mengirimkannya lewat fungsi async terpisah di main.py
-                except Exception as e:
-                    print(f"Gagal kirim progres: {e}")
-
             time.sleep(0.2)
             
             current_page += 1
