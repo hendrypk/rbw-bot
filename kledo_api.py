@@ -251,6 +251,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
         
         df['hour'] = df['dt'].dt.hour
         df['date'] = df['dt'].dt.date
+        df['day_number'] = df['dt'].dt.day 
         df['day_id'] = df['dt'].dt.day_name().map({
             'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu', 
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
@@ -291,7 +292,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
             items=('total_items', 'sum'),
             total_months_present=('date', lambda x: pd.Series([d.strftime('%Y-%m') for d in x]).nunique())
         ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
-        
+
         c_sum = df.groupby('contact_name').agg(
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
