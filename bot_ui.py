@@ -74,6 +74,8 @@ def parse_shortcut_range(shortcut):
     else: return None, None
     return start.strftime("%d %b %y"), end.strftime("%d %b %y")
 
+# ... [Biarkan fungsi get_main_keyboard(), generate_report_text(), parse_wallet_key() DLL utuh seperti di Source 3] ...
+
 async def generate_and_send_chart(update_or_query, context, target, start_date=None, end_date=None):
     try:
         if not financial_data["history"]:
@@ -116,9 +118,13 @@ async def generate_and_send_chart(update_or_query, context, target, start_date=N
         plt.savefig(buf, format='png')
         buf.seek(0)
         plt.close()
-        chat_id = update_or_query.effective_chat.id if hasattr(update_or_query, "effective_chat") else update_or_query.message.chat_id
         
-        # Hilangkan underscore agar tidak dianggap format italic oleh Telegram
+        # FIXED: Menggunakan .message.chat.id untuk telegram versi terbaru
+        if hasattr(update_or_query, "message") and update_or_query.message:
+            chat_id = update_or_query.message.chat.id 
+        else:
+            chat_id = update_or_query.effective_chat.id
+        
         safe_target = target.replace('_', ' ').upper()
         caption_text = f"📈 *Grafik Analisis ({safe_target})*\n🗓️ Periode: {filtered_dates[0]} s/d {filtered_dates[-1]}"
         

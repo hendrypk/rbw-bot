@@ -3,13 +3,13 @@ import asyncio
 import shlex
 import datetime
 import pytz
+import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import TELEGRAM_TOKEN, GROUP_CHAT_ID
 from data import financial_data, save_data
 
-# Pastikan kledo_api.py Anda sudah menggunakan fungsi analyze_season_from_db yang baru
 from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_season_from_db, sync_missing_invoices
 from bot_ui import (
     get_main_keyboard, generate_report_text, parse_wallet_key, 
@@ -55,11 +55,18 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        parts = shlex.split(" ".join(context.args))
-        if parts[1].lower() in ["to", "ke"]:
-            sumber, tujuan, nominal = parts[0].lower(), parts[2].lower(), int(parts[3].replace(".", ""))
+        # FIXED: Menangani spasi pada nama alokasi seperti "Gaji Akmal"
+        raw_text = " ".join(context.args).lower()
+        if " to " in raw_text:
+            sumber_str, rest = raw_text.split(" to ", 1)
+        elif " ke " in raw_text:
+            sumber_str, rest = raw_text.split(" ke ", 1)
         else:
-            sumber, tujuan, nominal = parts[0].lower(), parts[1].lower(), int(parts[2].replace(".", ""))
+            return await update.message.reply_text("⚠️ Format: `/tf seabank ke gaji akmal 500000`")
+            
+        parts_rest = rest.rsplit(" ", 1)
+        tujuan_str = parts_rest[0].strip()
+        nominal = int(parts_rest[1].replace(".", ""))
 
         def find_akun(query):
             if "seabank" in query: return "seabank", "efektif"
@@ -68,8 +75,8 @@ async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             matched = next((k for k in financial_data["alokasi"] if k.lower() == query), None)
             return (matched, "alokasi") if matched else (None, None)
 
-        s_key, s_tipe = find_akun(sumber)
-        t_key, t_tipe = find_akun(tujuan)
+        s_key, s_tipe = find_akun(sumber_str)
+        t_key, t_tipe = find_akun(tujuan_str)
         if not s_key or not t_key: return await update.message.reply_text("⚠️ Akun tidak ditemukan!")
 
         if (financial_data[s_key] if s_tipe == "efektif" else financial_data["alokasi"][s_key]) < nominal:
@@ -96,64 +103,72 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == "view_report":
-        await query.edit_message_text(generate_report_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
-    
-    elif data == "main_menu":
-        await start(update, context)
+    # FIXED: Menambahkan try-except untuk mencegah bot lumpuh karena 'Message is not modified' 
+    try:
+        if data == "view_report":
+            await query.edit_message_text(generate_report_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
         
-    elif data == "menu_chart":
-        keyboard = [[InlineKeyboardButton("📈 Grafik Balance", callback_data="chart_balance")], [InlineKeyboardButton("🛍️ Menu Grafik Sales", callback_data="menu_chart_sales")], [InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]
-        await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        
-    elif data == "menu_chart_sales":
-        keyboard = [[InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")], [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]]
-        await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        
-    elif data == "chart_balance": await generate_and_send_chart(query, context, "balance")
-    elif data == "chart_sales_rupiah": await generate_and_send_chart(query, context, "sales_rupiah")
-    elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
-    elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
-    
-    elif data in ["peak_season", "low_season"]:
-        mode = "peak" if data == "peak_season" else "low"
-        title = "Peak Season" if mode == "peak" else "Low Season"
-        await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
-        report = await asyncio.to_thread(analyze_season_from_db, mode)
-        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
-
-    elif data == "sync_data":
-        await query.edit_message_text("⏳ Sedang menyinkronkan data dari Kledo...", parse_mode="Markdown")
-        report = await asyncio.to_thread(sync_missing_invoices)
-        await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
-
-    elif data == "transfer_info":
-        await query.edit_message_text("🔄 **MENU TRANSFER SALDO**\nContoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]))
-    
-    elif data.startswith("confirm_save_"):
-        target = data.replace("confirm_save_", "")
-        current_date = financial_data["date"]
-        if current_date not in financial_data["history"]: financial_data["history"][current_date] = {"balance": {}, "sales": {}}
-        if target in ["balance", "all"]:
-            tot_e = financial_data["seabank"] + financial_data["jago"] + financial_data["cash_tunai"]
-            tot_ne = sum(financial_data["alokasi"].values())
-            financial_data["history"][current_date]["balance"] = {"seabank": financial_data["seabank"], "jago": financial_data["jago"], "cash_tunai": financial_data["cash_tunai"], "total_efektif": tot_e, "total_non_efektif": tot_ne, "grand_total": tot_e + tot_ne}
-        if target in ["sales", "overview", "all"]:
-            financial_data["history"][current_date]["sales"] = {ch: d_val.copy() for ch, d_val in financial_data["sales"].items()}
-        save_data(financial_data)
-        await query.edit_message_text(f"✅ **ARSIP `{current_date}` DISIMPAN!**", parse_mode="Markdown")
-        
-    elif data == "cancel_save":
-        await query.edit_message_text("❌ **Dibatalkan.**", parse_mode="Markdown")
-    
-    elif data == "confirm_insert":
-        await query.edit_message_text("⏳ Memasukkan data...")
-        saved, err = await asyncio.to_thread(insert_temp_json_to_db)
-        await query.edit_message_text(err if err else f"✅ **{saved}** invoice disimpan.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        elif data == "main_menu":
+            await start(update, context)
             
-    elif data == "skip_insert":
-        if os.path.exists("temp_invoices.json"): os.remove("temp_invoices.json")
-        await query.edit_message_text("❌ Dibatalkan.", reply_markup=get_main_keyboard())
+        elif data == "menu_chart":
+            keyboard = [[InlineKeyboardButton("📈 Grafik Balance", callback_data="chart_balance")], [InlineKeyboardButton("🛍️ Menu Grafik Sales", callback_data="menu_chart_sales")], [InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]
+            await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            
+        elif data == "menu_chart_sales":
+            keyboard = [[InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")], [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]]
+            await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            
+        elif data == "chart_balance": await generate_and_send_chart(query, context, "balance")
+        elif data == "chart_sales_rupiah": await generate_and_send_chart(query, context, "sales_rupiah")
+        elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
+        elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
+        
+        elif data in ["peak_season", "low_season"]:
+            mode = "peak" if data == "peak_season" else "low"
+            title = "Peak Season" if mode == "peak" else "Low Season"
+            await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
+            report = await asyncio.to_thread(analyze_season_from_db, mode)
+            await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+
+        elif data == "sync_data":
+            await query.edit_message_text("⏳ Sedang menyinkronkan data dari Kledo...", parse_mode="Markdown")
+            report = await asyncio.to_thread(sync_missing_invoices)
+            await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+
+        elif data == "transfer_info":
+            await query.edit_message_text("🔄 **MENU TRANSFER SALDO**\nContoh: `/tf seabank to jago 500000`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]))
+        
+        elif data.startswith("confirm_save_"):
+            target = data.replace("confirm_save_", "")
+            current_date = financial_data["date"]
+            if current_date not in financial_data["history"]: financial_data["history"][current_date] = {"balance": {}, "sales": {}}
+            if target in ["balance", "all"]:
+                tot_e = financial_data["seabank"] + financial_data["jago"] + financial_data["cash_tunai"]
+                tot_ne = sum(financial_data["alokasi"].values())
+                financial_data["history"][current_date]["balance"] = {"seabank": financial_data["seabank"], "jago": financial_data["jago"], "cash_tunai": financial_data["cash_tunai"], "total_efektif": tot_e, "total_non_efektif": tot_ne, "grand_total": tot_e + tot_ne}
+            if target in ["sales", "overview", "all"]:
+                financial_data["history"][current_date]["sales"] = {ch: d_val.copy() for ch, d_val in financial_data["sales"].items()}
+            save_data(financial_data)
+            await query.edit_message_text(f"✅ **ARSIP `{current_date}` DISIMPAN!**", parse_mode="Markdown")
+            
+        elif data == "cancel_save":
+            await query.edit_message_text("❌ **Dibatalkan.**", parse_mode="Markdown")
+        
+        elif data == "confirm_insert":
+            await query.edit_message_text("⏳ Memasukkan data...")
+            saved, err = await asyncio.to_thread(insert_temp_json_to_db)
+            await query.edit_message_text(err if err else f"✅ **{saved}** invoice disimpan.", parse_mode="Markdown", reply_markup=get_main_keyboard())
+                
+        elif data == "skip_insert":
+            if os.path.exists("temp_invoices.json"): os.remove("temp_invoices.json")
+            await query.edit_message_text("❌ Dibatalkan.", reply_markup=get_main_keyboard())
+            
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" not in str(e):
+            print(f"Telegram error: {e}")
+    except Exception as e:
+        print(f"Unhandled error in callback: {e}")
 
 async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -205,12 +220,10 @@ def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
-    # Mendaftarkan Scheduler / Cron Job pada Jam 07:00 WIB setiap hari
     wib_timezone = pytz.timezone('Asia/Jakarta')
     target_time = datetime.time(hour=7, minute=0, second=0, tzinfo=wib_timezone)
     app.job_queue.run_daily(daily_sync_job, time=target_time)
     
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("se", set_efektif))
