@@ -116,13 +116,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📊 **PILIH KATEGORI GRAFIK:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             
         elif data == "menu_chart_sales":
-            keyboard = [[InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")], [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]]
+            keyboard = [
+                [InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")],
+                [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]
+            ]
             await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             
-        elif data == "chart_balance": await generate_and_send_chart(query, context, "balance")
-        elif data == "chart_sales_rupiah": await generate_and_send_chart(query, context, "sales_rupiah")
-        elif data == "chart_sales_porsi": await generate_and_send_chart(query, context, "sales_porsi")
-        elif data == "chart_sales_nota": await generate_and_send_chart(query, context, "sales_nota")
+        elif data == "chart_balance": 
+            await generate_and_send_chart(query, context, "balance")
+        
+        elif data == "chart_sales_rupiah": 
+            await generate_and_send_chart_from_db(query, context, "sales_rupiah")
+        elif data == "chart_sales_porsi": 
+            await generate_and_send_chart_from_db(query, context, "sales_porsi")
+        elif data == "chart_sales_nota": 
+            await generate_and_send_chart_from_db(query, context, "sales_nota")
         
         elif data in ["peak_season", "low_season"]:
             mode = "peak" if data == "peak_season" else "low"
@@ -244,6 +252,102 @@ async def daily_sync_job(context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             print(f"❌ Gagal mengirim notifikasi auto-sync ke grup: {e}")
+
+async def generate_and_send_chart_from_db(update_or_query, context, target, start_date=None, end_date=None):
+    try:
+        # Koneksi ke database SQLite
+        conn = sqlite3.connect('kledo_invoices.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT trans_date, amount, raw_data FROM invoices ORDER BY trans_date ASC")
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            msg = "⚠️ Belum ada data invoice di database! Silakan sinkronkan/tarik data terlebih dahulu."
+            if hasattr(update_or_query, "message") and update_or_query.message:
+                await update_or_query.message.reply_text(msg, parse_mode="Markdown")
+            else:
+                await update_or_query.edit_message_text(msg, parse_mode="Markdown")
+            return
+
+        # Agregasi data berdasarkan tanggal transaksi (trans_date)
+        daily_data = {}
+        for row in rows:
+            t_date = row["trans_date"]
+            if not t_date:
+                continue
+            
+            try:
+                dt_obj = datetime.strptime(t_date[:10], "%Y-%m-%d")
+                date_key = dt_obj.strftime("%d %b %y") # Format: e.g. "09 Jun 26"
+            except:
+                date_key = t_date
+
+            if date_key not in daily_data:
+                daily_data[date_key] = {"rupiah": 0, "nota": 0, "porsi": 0}
+
+            # 1. Metrik Rupiah (Amount)
+            amount = float(row["amount"] or 0)
+            daily_data[date_key]["rupiah"] += amount
+            
+            # 2. Metrik Nota (Jumlah Transaksi)
+            daily_data[date_key]["nota"] += 1
+
+            # 3. Metrik Porsi (Total Qty dari items di raw_data)
+            try:
+                raw_json = json.loads(row["raw_data"])
+                items = raw_json.get("items", [])
+                total_qty = sum(float(item.get("qty", 0)) for item in items)
+                daily_data[date_key]["porsi"] += total_qty
+            except:
+                pass
+
+        if not daily_data:
+            msg = "⚠️ Tidak ada data transaksi yang valid untuk dibuat grafik."
+            if hasattr(update_or_query, "message") and update_or_query.message:
+                await update_or_query.message.reply_text(msg, parse_mode="Markdown")
+            else:
+                await update_or_query.edit_message_text(msg, parse_mode="Markdown")
+            return
+
+        filtered_dates = list(daily_data.keys())
+        metric_name = target.replace("sales_", "") # rupiah, porsi, atau nota
+        
+        vals = [daily_data[d].get(metric_name, 0) for d in filtered_dates]
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(filtered_dates, vals, marker='o', color='g', linewidth=2)
+        plt.title(f"Grafik Penjualan ({metric_name.capitalize()}) dari Database Kledo")
+        plt.ylabel("Rupiah (Rp)" if metric_name == "rupiah" else "Jumlah")
+        plt.xticks(rotation=45)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        plt.close()
+
+        chat_id = update_or_query.effective_chat.id if hasattr(update_or_query, "effective_chat") else update_or_query.message.chat_id
+        await context.bot.send_photo(
+            chat_id=chat_id, 
+            photo=buf, 
+            caption=f"📈 **Grafik Analisis Sales ({metric_name.upper()})**\n🗓️ Sumber: Database SQLite (`kledo_invoices.db`)", 
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        msg = f"⚠️ Gagal membuat grafik dari database: {e}"
+        logging.error(f"Error DB Chart: {e}")
+        if hasattr(update_or_query, "message") and update_or_query.message:
+            await update_or_query.message.reply_text(msg, parse_mode="Markdown")
+        else:
+            await update_or_query.edit_message_text(msg, parse_mode="Markdown")
 
 def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")
