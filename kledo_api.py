@@ -357,11 +357,11 @@ def get_ai_recommendation(analysis_report, mode="peak"):
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
+                config={}
             )
             if response and response.text:
                 return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{response.text}"
         except Exception as e:
-            # Jika model ini gagal/sibuk, lanjut mencoba model cadangan berikutnya
             continue
             
     return "\n⚠️ Gagal memuat rekomendasi AI: Semua model cadangan sedang sibuk (503 Unavailable). Silakan coba beberapa saat lagi."
