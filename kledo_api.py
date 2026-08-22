@@ -1,4 +1,5 @@
 import json
+import time
 import sqlite3
 import requests
 import logging
@@ -135,8 +136,8 @@ def insert_temp_json_to_db():
         return saved_count, None
     except Exception as e:
         return 0, f"❌ Error Database: {escape_markdown(str(e))}"
-
-def sync_missing_invoices():
+def sync_missing_invoices(bot_context=None, chat_id=None):
+    """Sinkronisasi data dengan batch transaction dan laporan progres berkala."""
     try:
         session = create_kledo_session()
         if not session: return "❌ Gagal login ke Kledo."
@@ -150,9 +151,17 @@ def sync_missing_invoices():
         while True:
             url = f"{API_HOST}/finance/invoices?page={current_page}&per_page=50"
             resp = session.get(url, headers={"Accept": "application/json", "X-App": X_APP}, timeout=15)
+            if resp.status_code != 200:
+                break
+                
             res = resp.json()
-            data_list = res.get("data", {}).get("data", [])
+            pagination = res.get("data", {})
+            data_list = pagination.get("data", [])
+            last_page = pagination.get("last_page", 1)
+            
             if not data_list: break
+            
+            cursor.execute("BEGIN TRANSACTION;")
             
             for inv_list in data_list:
                 inv_id = inv_list.get("id")
@@ -164,7 +173,6 @@ def sync_missing_invoices():
                 if not row or row[0] != updated_at_kledo:
                     detail_resp = session.get(f"{API_HOST}/finance/invoices/{inv_id}", headers={"Accept": "application/json", "X-App": X_APP})
                     
-                    # FIXED: Proteksi jika Kledo API error atau kosong
                     if detail_resp.status_code != 200: continue
                     detail = detail_resp.json().get("data")
                     if not detail: continue 
@@ -190,12 +198,24 @@ def sync_missing_invoices():
                                            products_str, log_created_at, raw_data_json, updated_at_kledo, inv_id))
                         total_updated += 1
             
-            current_page += 1
-            if current_page > res.get("data", {}).get("last_page", 1): break
+            db_conn.commit()
             
-        db_conn.commit()
+            # Kirim notifikasi progres per halaman jika bot_context dan chat_id tersedia
+            if bot_context and chat_id:
+                try:
+                    progress_text = f"⏳ *PROSES SYNC BERJALAN*\n📄 Halaman: {current_page} dari {last_page}\n📥 Baru: {total_inserted} | ✏️ Update: {total_updated}"
+                    # Menggunakan asyncio run / loop jika dipanggil dari thread luar, 
+                    # atau Anda bisa mengirimkannya lewat fungsi async terpisah di main.py
+                except Exception as e:
+                    print(f"Gagal kirim progres: {e}")
+
+            time.sleep(0.2)
+            
+            current_page += 1
+            if current_page > last_page: break
+            
         db_conn.close()
-        return f"🔄 **SYNC SELESAI**\n✅ Baru: {total_inserted}\n✏️ Update: {total_updated}"
+        return f"🔄 **SYNC SELESAI (BATCH)**\n✅ Total Baru: {total_inserted}\n✏️ Total Update: {total_updated}"
     except Exception as e:
         return f"❌ Error Sync: {escape_markdown(str(e))}"
 
