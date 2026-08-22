@@ -256,6 +256,16 @@ def analyze_season_from_db(mode="peak", channel="all"):
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
         })
         
+        # Hitung rentang tanggal keseluruhan untuk pembagi hari yang akurat (termasuk hari dengan 0 transaksi)
+        min_date = df['dt'].dt.date.min()
+        max_date = df['dt'].dt.date.max()
+        full_date_range = pd.date_range(start=min_date, end=max_date)
+        full_day_names = full_date_range.day_name().map({
+            'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu', 
+            'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
+        })
+        total_days_in_range = full_day_names.value_counts().to_dict()
+
         total_unique_days = df['date'].nunique() or 1
         asc = (mode == "low")
         
@@ -269,9 +279,11 @@ def analyze_season_from_db(mode="peak", channel="all"):
         d_sum = df.groupby('day_id').agg(
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
-            items=('total_items', 'sum'),
-            active_weeks=('date', lambda x: x.nunique() / 7)
+            items=('total_items', 'sum')
         ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
+        
+        # Petakan total kemunculan hari dari rentang tanggal kalender penuh
+        d_sum['total_occurrences'] = d_sum['day_id'].map(total_days_in_range).fillna(1)
         
         c_sum = df.groupby('contact_name').agg(
             tx=('amount', 'count'), 
@@ -304,7 +316,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
             
         report += f"\n📅 **{'2' if channel != 'all' else '3'}. HARI SIBUK & RATA-RATA**\n"
         for _, r in d_sum.head(3).iterrows():
-            divisor = max(r['active_weeks'], 1)
+            divisor = r['total_occurrences'] if r['total_occurrences'] > 0 else 1
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
