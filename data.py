@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+import logging
 from config import DATA_FILE
 
 default_financial_data = {
@@ -22,68 +23,108 @@ default_financial_data = {
 }
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            data = json.load(f)
-            if "alokasi" in data:
-                for key, default_val in default_financial_data["alokasi"].items():
-                    if key not in data["alokasi"]:
-                        data["alokasi"][key] = default_val
-            if "sales" not in data:
-                data["sales"] = default_financial_data["sales"]
-            else:
-                for channel, default_val in default_financial_data["sales"].items():
-                    if channel not in data["sales"]:
-                        data["sales"][channel] = default_val
-                    elif "wallet" not in data["sales"][channel]:
-                        data["sales"][channel]["wallet"] = default_val["wallet"]
-            if "history" not in data:
-                data["history"] = {}
-            return data
-    return default_financial_data.copy()
+    if not os.path.exists(DATA_FILE):
+        return default_financial_data.copy()
+
+    with open(DATA_FILE, "r") as f:
+        data = json.load(f)
+
+    data.setdefault("alokasi", {})
+    for key, default_val in default_financial_data["alokasi"].items():
+        data["alokasi"].setdefault(key, default_val)
+
+    data.setdefault("sales", {})
+    for channel, default_val in default_financial_data["sales"].items():
+        if channel not in data["sales"]:
+            data["sales"][channel] = default_val.copy()
+        else:
+            data["sales"][channel].setdefault("wallet", default_val["wallet"])
+
+    data.setdefault("history", {})
+    return data
 
 def save_data(data_obj):
     with open(DATA_FILE, "w") as f:
         json.dump(data_obj, f, indent=4)
 
-def init_db():
-    conn = sqlite3.connect('kledo_invoices.db')
+def run_migrations(conn):
+    """Sistem Migrasi Database Internal"""
     cursor = conn.cursor()
     
-    # 1. Pastikan tabel invoices ada
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS invoices (
-            invoice_id INTEGER PRIMARY KEY,
-            ref_number TEXT,
-            contact_name TEXT,
-            amount REAL,
-            products TEXT,
-            created_time TEXT,
-            raw_data TEXT
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY
         )
     ''')
     
-    # 2. Tambahkan kolom 'updated_at' jika belum ada (ALTER TABLE)
-    try:
-        cursor.execute("ALTER TABLE invoices ADD COLUMN updated_at TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        # Error ini muncul jika kolom 'updated_at' sudah ada, jadi kita abaikan saja
-        pass
+    cursor.execute('SELECT MAX(version) FROM schema_migrations')
+    result = cursor.fetchone()[0]
+    current_version = result if result is not None else 0
+
+    migrations = [
+        # Versi 1: Struktur awal tabel invoices
+        (1, '''
+            CREATE TABLE IF NOT EXISTS invoices (
+                invoice_id INTEGER PRIMARY KEY,
+                ref_number TEXT,
+                contact_name TEXT,
+                amount REAL DEFAULT 0,
+                products TEXT,
+                created_time TEXT,
+                raw_data TEXT
+            )
+        '''),
+        
+        # Versi 2: Penambahan kolom updated_at untuk Sync Kledo
+        (2, '''
+            ALTER TABLE invoices ADD COLUMN updated_at TEXT
+        '''),
+        
+        # Versi 3: Pembuatan tabel peak_analytics
+        (3, '''
+            CREATE TABLE IF NOT EXISTS peak_analytics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_type TEXT NOT NULL,
+                period_key TEXT UNIQUE NOT NULL,
+                total_transactions INTEGER DEFAULT 0,
+                total_omzet REAL DEFAULT 0.0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        '''),
+
+        # Versi 4: Tabel relasional terpisah untuk item produk di setiap invoice
+        (4, '''
+            CREATE TABLE IF NOT EXISTS invoice_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER,
+                product_name TEXT,
+                qty REAL DEFAULT 1,
+                price REAL DEFAULT 0,
+                subtotal REAL DEFAULT 0,
+                FOREIGN KEY (invoice_id) REFERENCES invoices(invoice_id) ON DELETE CASCADE
+            )
+        ''')
+    ]
     
-    # 3. Buat tabel peak_analytics
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS peak_analytics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            period_type TEXT,
-            period_key TEXT PRIMARY KEY,
-            total_transactions INTEGER,
-            total_omzet REAL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
+    for version, query in migrations:
+        if version > current_version:
+            try:
+                cursor.execute(query)
+                cursor.execute('INSERT INTO schema_migrations (version) VALUES (?)', (version,))
+                conn.commit()
+                logging.info(f"✅ DB Migration: Versi {version} berhasil dijalankan.")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    cursor.execute('INSERT INTO schema_migrations (version) VALUES (?)', (version,))
+                    conn.commit()
+                else:
+                    raise e
+
+def init_db():
+    conn = sqlite3.connect('kledo_invoices.db')
+    # Mengaktifkan dukungan Foreign Key pada SQLite
+    conn.execute("PRAGMA foreign_keys = ON;")
+    run_migrations(conn)
     return conn
 
 financial_data = load_data()
