@@ -127,10 +127,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data in ["peak_season", "low_season"]:
             mode = "peak" if data == "peak_season" else "low"
             title = "Peak Season" if mode == "peak" else "Low Season"
-            await query.edit_message_text(f"⏳ Menganalisis {title} dari database...", parse_mode="Markdown")
-            report = await asyncio.to_thread(analyze_season_from_db, mode)
-            await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
+            
+            # Tampilkan pilihan channel terlebih dahulu
+            keyboard = [
+                [InlineKeyboardButton("🌐 All Channel", callback_data=f"{mode}_ch_all"),
+                InlineKeyboardButton("🏪 POS Customer", callback_data=f"{mode}_ch_POS Customer")],
+                [InlineKeyboardButton("🛍️ Shopeefood", callback_data=f"{mode}_ch_Shopeefood"),
+                InlineKeyboardButton("🛵 Grabfood", callback_data=f"{mode}_ch_Grabfood")],
+                [InlineKeyboardButton("🚴 Gofood", callback_data=f"{mode}_ch_Gofood")],
+                [InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]
+            ]
+            await query.edit_message_text(
+                f"📊 **PILIH CHANNEL UNTUK {title.upper()}:**", 
+                reply_markup=InlineKeyboardMarkup(keyboard), 
+                parse_mode="Markdown"
+            )
 
+        elif data.startswith("peak_ch_") or data.startswith("low_ch_"):
+            parts = data.split("_ch_", 1)
+            mode = parts[0] # "peak" atau "low"
+            channel = parts[1] # "all", "POS Customer", "Shopeefood", dll
+            
+            title = "Peak Season" if mode == "peak" else "Low Season"
+            await query.edit_message_text(f"⏳ Menganalisis {title} ({channel}) dari database...", parse_mode="Markdown")
+            
+            # Jalankan analisis dengan memasukkan parameter channel yang dipilih
+            report = await asyncio.to_thread(analyze_season_from_db, mode, channel)
+            
+            await query.edit_message_text(
+                report, 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), 
+                parse_mode="Markdown"
+            )
+            
         elif data == "sync_data":
             await query.edit_message_text("⏳ Sedang menyinkronkan data dari Kledo...", parse_mode="Markdown")
             report = await asyncio.to_thread(sync_missing_invoices)
