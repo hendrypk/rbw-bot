@@ -323,7 +323,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
         return f"❌ Error: {escape_markdown(str(e))}"
 
 def escape_markdown_ai(text):
-    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""git a
+    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""
     escape_chars = ['_', '*', '`', '[', ']']
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
