@@ -2,7 +2,12 @@ import os
 import asyncio
 import shlex
 import datetime
+from datetime import datetime as dt, timedelta
 import pytz
+import sqlite3
+import json
+import io
+import logging
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -13,8 +18,41 @@ from data import financial_data, save_data
 from kledo_api import fetch_invoices_to_json, insert_temp_json_to_db, analyze_season_from_db, sync_missing_invoices
 from bot_ui import (
     get_main_keyboard, generate_report_text, parse_wallet_key, 
-    parse_shortcut_range, generate_and_send_chart
+    generate_and_send_chart
 )
+
+# --- HELPER: PEMECAH TEKS PANJANG (Mencegah Message_too_long) ---
+async def send_long_text(bot_or_update, chat_or_target, text, parse_mode="Markdown", reply_markup=None):
+    """Memecah pesan teks jika melebihi batas maksimal Telegram (4000 karakter)"""
+    max_length = 4000
+    
+    # Deteksi apakah argumen pertama adalah Update object atau Bot instance
+    if hasattr(bot_or_update, "message") and bot_or_update.message:
+        target_obj = bot_or_update.message
+        chat_id = bot_or_update.effective_chat.id
+        is_update = True
+    else:
+        bot = bot_or_update
+        chat_id = chat_or_target
+        is_update = False
+
+    if len(text) <= max_length:
+        if is_update:
+            await target_obj.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        else:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return
+
+    chunks = [text[i:i + max_length] for i in range(0, len(text), max_length)]
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == len(chunks) - 1 else None
+        if is_update and idx == 0:
+            await target_obj.reply_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+        else:
+            if is_update:
+                await bot_or_update.effective_chat.send_message(text=chunk, parse_mode=parse_mode, reply_markup=markup)
+            else:
+                await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=parse_mode, reply_markup=markup)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = "🤖 **BOT KEUANGAN & ANALISIS**\n\nSilakan pilih menu di bawah ini:"
@@ -55,7 +93,6 @@ async def set_nonefektif(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def transfer_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # FIXED: Menangani spasi pada nama alokasi seperti "Gaji Akmal"
         raw_text = " ".join(context.args).lower()
         if " to " in raw_text:
             sumber_str, rest = raw_text.split(" to ", 1)
@@ -103,7 +140,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # FIXED: Menambahkan try-except untuk mencegah bot lumpuh karena 'Message is not modified' 
     try:
         if data == "view_report":
             await query.edit_message_text(generate_report_text(), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
@@ -120,23 +156,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("💰 Rupiah", callback_data="chart_sales_rupiah"), InlineKeyboardButton("📦 Porsi", callback_data="chart_sales_porsi")],
                 [InlineKeyboardButton("🧾 Nota", callback_data="chart_sales_nota"), InlineKeyboardButton("⬅️ Kembali", callback_data="menu_chart")]
             ]
-            await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text("🛍️ **PILIH JENIS METRIK SALES (30 Hari Terakhir):**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             
         elif data == "chart_balance": 
             await generate_and_send_chart(query, context, "balance")
         
         elif data == "chart_sales_rupiah": 
-            await generate_and_send_chart_from_db(query, context, "sales_rupiah")
+            await generate_and_send_chart_from_db(query, context, "sales_rupiah", default_last_30=True)
         elif data == "chart_sales_porsi": 
-            await generate_and_send_chart_from_db(query, context, "sales_porsi")
+            await generate_and_send_chart_from_db(query, context, "sales_porsi", default_last_30=True)
         elif data == "chart_sales_nota": 
-            await generate_and_send_chart_from_db(query, context, "sales_nota")
+            await generate_and_send_chart_from_db(query, context, "sales_nota", default_last_30=True)
         
         elif data in ["peak_season", "low_season"]:
             mode = "peak" if data == "peak_season" else "low"
             title = "Peak Season" if mode == "peak" else "Low Season"
             
-            # Tampilkan pilihan channel terlebih dahulu
             keyboard = [
                 [InlineKeyboardButton("🌐 All Channel", callback_data=f"{mode}_ch_all"),
                 InlineKeyboardButton("🏪 POS Customer", callback_data=f"{mode}_ch_POS Customer")],
@@ -153,13 +188,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("peak_ch_") or data.startswith("low_ch_"):
             parts = data.split("_ch_", 1)
-            mode = parts[0] # "peak" atau "low"
-            channel = parts[1] # "all", "POS Customer", "Shopeefood", dll
+            mode = parts[0]
+            channel = parts[1]
             
             title = "Peak Season" if mode == "peak" else "Low Season"
             await query.edit_message_text(f"⏳ Menganalisis {title} ({channel}) dari database...", parse_mode="Markdown")
             
-            # Jalankan analisis dengan memasukkan parameter channel yang dipilih
             report = await asyncio.to_thread(analyze_season_from_db, mode, channel)
             
             await query.edit_message_text(
@@ -169,7 +203,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         elif data == "sync_data":
-            await query.edit_message_text("⏳ Sedang menyinkronkan data dari Kledo...", parse_mode="Markdown")
+            await query.edit_message_text("⏳ Sedang menyinkronkan data 30 hari terakhir dari Kledo...", parse_mode="Markdown")
             report = await asyncio.to_thread(sync_missing_invoices)
             await query.edit_message_text(report, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="main_menu")]]), parse_mode="Markdown")
 
@@ -234,44 +268,81 @@ async def get_invoice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"⚠️ Terjadi kesalahan: {e}")
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Sedang mengecek & menyinkronkan data terbaru dari Kledo ke database...\nProses ini mungkin memakan waktu.", parse_mode="Markdown")
+    await update.message.reply_text("⏳ Sedang mengecek & menyinkronkan data 30 hari terakhir dari Kledo ke database...", parse_mode="Markdown")
     report = await asyncio.to_thread(sync_missing_invoices)
-    await update.message.reply_text(report, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    # Menggunakan send_long_text agar aman dari Message_too_long
+    await send_long_text(update, None, report, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-# --- FUNGSI CRON JOB HARIAN (Jam 07:00 WIB) ---
+# --- CRON JOB HARIAN (Jam 07:00 WIB) ---
 async def daily_sync_job(context: ContextTypes.DEFAULT_TYPE):
-    print("Mengeksekusi Auto-Sync Harian...")
+    print("Mengeksekusi Auto-Sync Harian (30 Hari Terakhir)...")
     report = await asyncio.to_thread(sync_missing_invoices)
     
     if GROUP_CHAT_ID:
         try:
-            await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID,
-                text=f"⏰ **AUTO-SYNC HARIAN (07:00 WIB)**\n\n{report}",
-                parse_mode="Markdown"
-            )
+            full_text = f"⏰ **AUTO-SYNC HARIAN (07:00 WIB)**\n\n{report}"
+            await send_long_text(context.bot, GROUP_CHAT_ID, full_text, parse_mode="Markdown")
         except Exception as e:
             print(f"❌ Gagal mengirim notifikasi auto-sync ke grup: {e}")
 
-async def generate_and_send_chart_from_db(update_or_query, context, target, start_date=None, end_date=None):
+def parse_shortcut_range_db(shortcut):
+    today = dt.now()
+    sc = shortcut.lower().strip()
+    if sc == "this week": 
+        start = today - timedelta(days=today.weekday())
+        end = today
+    elif sc == "last week": 
+        start = today - timedelta(days=today.weekday() + 7)
+        end = start + timedelta(days=6)
+    elif sc == "this month": 
+        start = today.replace(day=1)
+        end = today
+    elif sc == "last month": 
+        end = today.replace(day=1) - timedelta(days=1)
+        start = end.replace(day=1)
+    elif sc == "last 30 days": 
+        start = today - timedelta(days=30)
+        end = today
+    elif sc == "this year": 
+        start = today.replace(month=1, day=1)
+        end = today
+    elif sc == "last year": 
+        start = today.replace(year=today.year-1, month=1, day=1)
+        end = today.replace(year=today.year-1, month=12, day=31)
+    else: 
+        start = today - timedelta(days=30)
+        end = today
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+async def generate_and_send_chart_from_db(update_or_query, context, target, start_date=None, end_date=None, default_last_30=True):
     try:
-        # Koneksi ke database SQLite
         conn = sqlite3.connect('kledo_invoices.db')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT trans_date, amount, raw_data FROM invoices ORDER BY trans_date ASC")
+
+        if not start_date or not end_date:
+            if default_last_30:
+                end_dt = dt.now()
+                start_dt = end_dt - timedelta(days=30)
+                start_date = start_dt.strftime("%Y-%m-%d")
+                end_date = end_dt.strftime("%Y-%m-%d")
+                cursor.execute("SELECT trans_date, amount, raw_data FROM invoices WHERE trans_date BETWEEN ? AND ? ORDER BY trans_date ASC", (start_date, end_date))
+            else:
+                cursor.execute("SELECT trans_date, amount, raw_data FROM invoices ORDER BY trans_date ASC")
+        else:
+            cursor.execute("SELECT trans_date, amount, raw_data FROM invoices WHERE trans_date BETWEEN ? AND ? ORDER BY trans_date ASC", (start_date, end_date))
+
         rows = cursor.fetchall()
         conn.close()
 
         if not rows:
-            msg = "⚠️ Belum ada data invoice di database! Silakan sinkronkan/tarik data terlebih dahulu."
+            msg = f"⚠️ Tidak ada data invoice di database untuk rentang waktu tersebut ({start_date} s/d {end_date})."
             if hasattr(update_or_query, "message") and update_or_query.message:
                 await update_or_query.message.reply_text(msg, parse_mode="Markdown")
             else:
                 await update_or_query.edit_message_text(msg, parse_mode="Markdown")
             return
 
-        # Agregasi data berdasarkan tanggal transaksi (trans_date)
         daily_data = {}
         for row in rows:
             t_date = row["trans_date"]
@@ -279,22 +350,18 @@ async def generate_and_send_chart_from_db(update_or_query, context, target, star
                 continue
             
             try:
-                dt_obj = datetime.strptime(t_date[:10], "%Y-%m-%d")
-                date_key = dt_obj.strftime("%d %b %y") # Format: e.g. "09 Jun 26"
+                dt_obj = dt.strptime(t_date[:10], "%Y-%m-%d")
+                date_key = dt_obj.strftime("%d %b %y")
             except:
                 date_key = t_date
 
             if date_key not in daily_data:
                 daily_data[date_key] = {"rupiah": 0, "nota": 0, "porsi": 0}
 
-            # 1. Metrik Rupiah (Amount)
             amount = float(row["amount"] or 0)
             daily_data[date_key]["rupiah"] += amount
-            
-            # 2. Metrik Nota (Jumlah Transaksi)
             daily_data[date_key]["nota"] += 1
 
-            # 3. Metrik Porsi (Total Qty dari items di raw_data)
             try:
                 raw_json = json.loads(row["raw_data"])
                 items = raw_json.get("items", [])
@@ -312,7 +379,7 @@ async def generate_and_send_chart_from_db(update_or_query, context, target, star
             return
 
         filtered_dates = list(daily_data.keys())
-        metric_name = target.replace("sales_", "") # rupiah, porsi, atau nota
+        metric_name = target.replace("sales_", "")
         
         vals = [daily_data[d].get(metric_name, 0) for d in filtered_dates]
 
@@ -322,7 +389,7 @@ async def generate_and_send_chart_from_db(update_or_query, context, target, star
 
         plt.figure(figsize=(10, 5))
         plt.plot(filtered_dates, vals, marker='o', color='g', linewidth=2)
-        plt.title(f"Grafik Penjualan ({metric_name.capitalize()}) dari Database Kledo")
+        plt.title(f"Grafik Penjualan ({metric_name.capitalize()})\nPeriode: {start_date} s/d {end_date}")
         plt.ylabel("Rupiah (Rp)" if metric_name == "rupiah" else "Jumlah")
         plt.xticks(rotation=45)
         plt.grid(True, linestyle='--', alpha=0.6)
@@ -337,7 +404,7 @@ async def generate_and_send_chart_from_db(update_or_query, context, target, star
         await context.bot.send_photo(
             chat_id=chat_id, 
             photo=buf, 
-            caption=f"📈 **Grafik Analisis Sales ({metric_name.upper()})**\n🗓️ Sumber: Database SQLite (`kledo_invoices.db`)", 
+            caption=f"📈 **Grafik Analisis Sales ({metric_name.upper()})**\n🗓️ Periode: {start_date} s/d {end_date}", 
             parse_mode="Markdown"
         )
 
@@ -348,6 +415,50 @@ async def generate_and_send_chart_from_db(update_or_query, context, target, star
             await update_or_query.message.reply_text(msg, parse_mode="Markdown")
         else:
             await update_or_query.edit_message_text(msg, parse_mode="Markdown")
+
+async def send_chart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        args = context.args
+        if not args:
+            await generate_and_send_chart_from_db(update, context, "sales_rupiah", default_last_30=True)
+            return
+
+        target = args[0].lower()
+        start_date, end_date = None, None
+        args_text = " ".join(args[1:]).strip()
+
+        if args_text:
+            shortcut_keywords = ["this week", "last week", "this month", "last month", "last 30 days", "this year", "last year"]
+            matched_shortcut = next((sc for sc in shortcut_keywords if sc in args_text.lower()), None)
+            
+            if matched_shortcut:
+                start_date, end_date = parse_shortcut_range_db(matched_shortcut)
+            else:
+                if " to " in args_text.lower():
+                    parts = args_text.lower().split(" to ")
+                    start_date, end_date = parts[0].strip('"\''), parts[1].strip('"\'')
+                elif " ke " in args_text.lower():
+                    parts = args_text.lower().split(" ke ")
+                    start_date, end_date = parts[0].strip('"\''), parts[1].strip('"\'')
+
+        if target == "balance":
+            await generate_and_send_chart(update, context, "balance", start_date, end_date)
+        elif target in ["porsi", "nota", "rupiah", "sales_rupiah", "sales_porsi", "sales_nota"]:
+            metric = target.replace("sales_", "")
+            await generate_and_send_chart_from_db(update, context, f"sales_{metric}", start_date, end_date, default_last_30=False)
+        else:
+            await generate_and_send_chart_from_db(update, context, "sales_rupiah", start_date, end_date, default_last_30=True)
+
+    except Exception as e:
+        await update.message.reply_text(
+            "⚠️ Format perintah salah.\n\n"
+            "**Contoh Shortcut:**\n"
+            "`/chart rupiah \"last 30 days\"`\n"
+            "`/chart rupiah \"this month\"`\n\n"
+            "**Contoh Rentang Tanggal:**\n"
+            "`/chart rupiah \"2026-08-01\" to \"2026-08-23\"`", 
+            parse_mode="Markdown"
+        )
 
 def main():
     if not TELEGRAM_TOKEN: raise ValueError("❌ TELEGRAM_TOKEN tidak ditemukan di .env")
@@ -365,6 +476,7 @@ def main():
     app.add_handler(CommandHandler("save", save_archive_command))
     app.add_handler(CommandHandler("get_invoice", get_invoice_command))
     app.add_handler(CommandHandler("sync", sync_command))
+    app.add_handler(CommandHandler("chart", send_chart_command))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("🤖 Bot Telegram Keuangan & Analisis Kledo sedang berjalan...")

@@ -251,6 +251,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
         
         df['hour'] = df['dt'].dt.hour
         df['date'] = df['dt'].dt.date
+        df['year_month'] = df['dt'].dt.strftime('%Y-%m')
         df['day_number'] = df['dt'].dt.day 
         df['day_id'] = df['dt'].dt.day_name().map({
             'Monday': 'Senin', 'Tuesday': 'Selasa', 'Wednesday': 'Rabu', 
@@ -281,6 +282,7 @@ def analyze_season_from_db(mode="peak", channel="all"):
             tx=('amount', 'count'), 
             omzet=('amount', 'sum'), 
             items=('total_items', 'sum')
+            total_months_present=('year_month', 'nunique')
         ).query('tx > 0').sort_values(['tx', 'omzet'], ascending=asc).reset_index()
         
         # Petakan total kemunculan hari dari rentang tanggal kalender penuh
