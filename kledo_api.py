@@ -322,13 +322,18 @@ def analyze_season_from_db(mode="peak", channel="all"):
     except Exception as e:
         return f"❌ Error: {escape_markdown(str(e))}"
 
+def escape_markdown_ai(text):
+    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""
+    escape_chars = ['_', '*', '`', '[', ']']
+    for char in escape_chars:
+        text = text.replace(char, '\\' + char)
+    return text
+
 def get_ai_recommendation(analysis_report, mode="peak"):
     """Menggunakan Gemini AI dengan sistem cadangan (fallback) otomatis jika terjadi gangguan."""
     if not GEMINI_API_KEY:
         return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
     
-    # Daftar model urutan prioritas (Model utama, lalu model cadangan)
-    models_to_try = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
     models_to_try = [
         'gemini-3.7-flash',
         'gemini-3.6-flash',
@@ -360,7 +365,8 @@ def get_ai_recommendation(analysis_report, mode="peak"):
                 config={}
             )
             if response and response.text:
-                return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{response.text}"
+                safe_text = response.text.replace('*', '•') 
+                return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{safe_text}"
         except Exception as e:
             continue
             
