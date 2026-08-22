@@ -228,11 +228,10 @@ def analyze_season_from_db(mode="peak", channel="all"):
         if df.empty:
             return "⚠️ Database kosong."
 
-        # Filter berdasarkan channel jika bukan "all"
         if channel != "all":
             df = df[df['contact_name'].str.lower() == channel.lower()]
             if df.empty:
-                return f"⚠️ Tidak ada data untuk channel `{channel.capitalize()}`."
+                return f"⚠️ Tidak ada data untuk channel {channel.capitalize()}."
 
         def parse_row(raw):
             try:
@@ -256,7 +255,6 @@ def analyze_season_from_db(mode="peak", channel="all"):
             'Thursday': 'Kamis', 'Friday': 'Jumat', 'Saturday': 'Sabtu', 'Sunday': 'Minggu'
         })
         
-        total_unique_days = df['date'].nunique() or 1
         asc = (mode == "low")
         
         h_sum = df.groupby('hour').agg(
@@ -279,55 +277,62 @@ def analyze_season_from_db(mode="peak", channel="all"):
             items=('total_items', 'sum')
         ).sort_values('omzet', ascending=False).reset_index()
 
-        title = "🔥 PEAK SEASON (TERAMAI)" if mode == "peak" else "❄️ LOW SEASON (TERSEPI)"
+        title = "PEAK SEASON (TERAMAI)" if mode == "peak" else "LOW SEASON (TERSEPI)"
         ch_label = channel.capitalize() if channel != "all" else "Semua Channel"
-        report = f"📊 **ANALISIS {title}**\n📌 Filter: *{ch_label}*\n\n"
         
-        # Tampilkan rekap per channel hanya jika mode "all"
+        # Menggunakan format tanpa simbol markdown rumit agar aman dari error parsing
+        report = f"ANALISIS {title}\nFilter: {ch_label}\n\n"
+        
         if channel == "all":
-            report += "🛍️ **1. REKAP PER CHANNEL PENJUALAN**\n"
+            report += "1. REKAP PER CHANNEL PENJUALAN\n"
             for _, r in c_sum.iterrows():
                 c_name = r['contact_name'] or "Lainnya"
-                report += f"🔹 *{c_name}* ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+                report += f"- {c_name}: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += "\n"
 
-        report += f"🕒 **{'1' if channel != 'all' else '2'}. JAM SIBUK & RATA-RATA**\n"
+        report += f"2. JAM SIBUK & RATA-RATA\n"
         for _, r in h_sum.head(5).iterrows():
             divisor = r['active_days'] if r['active_days'] > 0 else 1
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
             
-            report += f"• **Jam {int(r['hour']):02d}:00**\n"
+            report += f"• Jam {int(r['hour']):02d}:00\n"
             report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
-            report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx | 📦 {avg_porsi:.1f} Porsi | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
+            report += f"  Rata-rata: {avg_tx:.1f} Tx | {avg_porsi:.1f} Porsi | Rp {int(avg_omzet):,}\n".replace(",", ".")
             
-        report += f"\n📅 **{'2' if channel != 'all' else '3'}. HARI SIBUK & RATA-RATA**\n"
+        report += f"\n3. HARI SIBUK & RATA-RATA\n"
         for _, r in d_sum.head(3).iterrows():
             divisor = max(r['active_weeks'], 1)
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
             
-            report += f"• **{r['day_id']}**\n"
+            report += f"• {r['day_id']}\n"
             report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
-            report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx/hari | 📦 {avg_porsi:.1f} Porsi/hari | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
+            report += f"  Rata-rata: {avg_tx:.1f} Tx/hari | {avg_porsi:.1f} Porsi/hari | Rp {int(avg_omzet):,}\n".replace(",", ".")
         
-        base_report = report
-
-        ai_insights = get_ai_recommendation(base_report, mode)
+        # Tambahkan rekomendasi AI yang sudah dibersihkan
+        ai_insights = get_ai_recommendation(report, mode)
         
-        return base_report + "\n" + ai_insights
-        
+        return report + "\n" + ai_insights
     except Exception as e:
-        return f"❌ Error: {escape_markdown(str(e))}"
+        return f"❌ Error: {str(e)}"
 
 def escape_markdown_ai(text):
-    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""
+    """Membersihkan atau meng-escape karakter yang sering merusak format Markdown Telegram."""git a
     escape_chars = ['_', '*', '`', '[', ']']
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
     return text
+
+def clean_markdown_for_telegram(text):
+    """Menghilangkan karakter khusus Markdown yang sering bikin error parsing di Telegram."""
+    # Jika Anda ingin mempertahankan teks tebal manual Anda, 
+    # cara teraman adalah merubah parse_mode menjadi None atau escape karakter liar.
+    # Alternatif paling kebal error: ganti semua * dan _ yang tidak berpasangan
+    return text.replace('__', '').replace('**', '')
+    
 
 def get_ai_recommendation(analysis_report, mode="peak"):
     """Menggunakan Gemini AI dengan sistem cadangan (fallback) otomatis jika terjadi gangguan."""
