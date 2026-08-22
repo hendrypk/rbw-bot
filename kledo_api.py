@@ -323,28 +323,45 @@ def analyze_season_from_db(mode="peak", channel="all"):
         return f"❌ Error: {escape_markdown(str(e))}"
 
 def get_ai_recommendation(analysis_report, mode="peak"):
-    """Menggunakan Gemini AI untuk menghasilkan rekomendasi bisnis dari data analisis."""
+    """Menggunakan Gemini AI dengan sistem cadangan (fallback) otomatis jika terjadi gangguan."""
     if not GEMINI_API_KEY:
         return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
     
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        prompt = f"""
-        Anda adalah seorang konsultan bisnis F&B (Kuliner) yang ahli. 
-        Berikut adalah data analisis operasional harian berdasarkan database toko kami:
-        
-        {analysis_report}
-        
-        Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
-        """
-        
-        # DIPERBARUI: Menggunakan model flash terbaru yang aktif
-        response = client.models.generate_content(
-            model='gemini-3.7-flash',
-            contents=prompt,
-        )
-        
-        return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{response.text}"
-    except Exception as e:
-        return f"\n⚠️ Gagal memuat rekomendasi AI: {e}"
+    # Daftar model urutan prioritas (Model utama, lalu model cadangan)
+    models_to_try = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
+    models_to_try = [
+        'gemini-3.7-flash',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.6-flash-high', 
+        'gemini-3.6-flash-medium', 
+        'gemini-3.6-flash-low', 
+        'gemini-3.5-flash-low', 
+        'gemini-3-flash'
+    ]
+    
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    
+    prompt = f"""
+    Anda adalah seorang konsultan bisnis F&B (Kuliner) yang ahli. 
+    Berikut adalah data analisis operasional harian berdasarkan database toko kami:
+    
+    {analysis_report}
+    
+    Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
+    """
+    
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            if response and response.text:
+                return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{response.text}"
+        except Exception as e:
+            # Jika model ini gagal/sibuk, lanjut mencoba model cadangan berikutnya
+            continue
+            
+    return "\n⚠️ Gagal memuat rekomendasi AI: Semua model cadangan sedang sibuk (503 Unavailable). Silakan coba beberapa saat lagi."
