@@ -328,7 +328,6 @@ def get_ai_recommendation(analysis_report, mode="peak"):
         return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
     
     try:
-        # Inisialisasi client Google GenAI secara eksplisit menggunakan API key
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = f"""
@@ -340,8 +339,9 @@ def get_ai_recommendation(analysis_report, mode="peak"):
         Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
         """
         
+        # DIPERBARUI: Menggunakan model flash terbaru yang aktif
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.7-flash',
             contents=prompt,
         )
         
