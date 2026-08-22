@@ -6,7 +6,7 @@ import logging
 import os
 import pandas as pd
 from datetime import datetime, timedelta
-from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE
+from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE, GEMINI_API_KEY
 from data import init_db
 
 TEMP_JSON_FILE = "temp_invoices.json"
@@ -312,6 +312,37 @@ def analyze_season_from_db(mode="peak", channel="all"):
             report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx/hari | 📦 {avg_porsi:.1f} Porsi/hari | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
         
-        return report
+        base_report = report
+
+        ai_insights = get_ai_recommendation(base_report, mode)
+        
+        return base_report + "\n" + ai_insights
+        
     except Exception as e:
         return f"❌ Error: {escape_markdown(str(e))}"
+
+def get_ai_recommendation(analysis_report, mode="peak"):
+    """Menggunakan Gemini AI untuk menghasilkan rekomendasi bisnis dari data analisis."""
+    if not GEMINI_API_KEY:
+        return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
+    
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        prompt = f"""
+        Anda adalah seorang konsultan bisnis F&B (Kuliner) yang ahli. 
+        Berikut adalah data analisis operasional harian berdasarkan database toko kami:
+        
+        {analysis_report}
+        
+        Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
+        """
+        
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        
+        return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMRELATION:**\n{response.text}"
+    except Exception as e:
+        return f"\n⚠️ Gagal memuat rekomendasi AI: {e}"
