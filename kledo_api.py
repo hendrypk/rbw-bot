@@ -303,14 +303,18 @@ def analyze_season_from_db(mode="peak", channel="all"):
                 report += f"🔹 *{c_name}* ➔ {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += "\n"
 
-        report += f"🕒 **{'1' if channel != 'all' else '2'}. JAM SIBUK & RATA-RATA**\n"
+        report += f"\n🕒 **{'1' if channel != 'all' else '2'}. JAM SIBUK & RATA-RATA**\n"
         for _, r in h_sum.head(5).iterrows():
             divisor = r['active_days'] if r['active_days'] > 0 else 1
             avg_tx = r['tx'] / divisor
             avg_porsi = r['items'] / divisor
             avg_omzet = r['omzet'] / divisor
             
-            report += f"• **Jam {int(r['hour']):02d}:00**\n"
+            start_hour = int(r['hour'])
+            end_hour = (start_hour + 1) % 24  # Menghitung jam berikutnya secara otomatis (misal 20 jadi 21)
+            
+            # Mengubah format label menjadi rentang 1 jam penuh
+            report += f"• **{start_hour:02d}:00 - {end_hour:02d}:00**\n"
             report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx | 📦 {avg_porsi:.1f} Porsi | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
             
@@ -324,6 +328,21 @@ def analyze_season_from_db(mode="peak", channel="all"):
             report += f"• **{r['day_id']}**\n"
             report += f"  Total: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
             report += f"  Rata-rata: ⚡ {avg_tx:.1f} Tx/hari | 📦 {avg_porsi:.1f} Porsi/hari | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
+
+        report += f"\n📆 **{'3' if channel != 'all' else '4'}. TOP TANGGAL (MONTH-TO-MONTH)**\n"
+        report += f"_Akumulasi tanggal yang sama dari berbagai bulan (Contoh: Tgl 17 Juni, 17 Juli, dst)_\n"
+        for _, r in m2m_sum.head(3).iterrows():
+            tgl = int(r['day_number'])
+            months_count = r['total_months_present'] if r['total_months_present'] > 0 else 1
+            
+            # Rata-rata per kemunculan tanggal tersebut di tiap bulan
+            avg_tx = r['tx'] / months_count
+            avg_porsi = r['items'] / months_count
+            avg_omzet = r['omzet'] / months_count
+            
+            report += f"• **Tanggal {tgl} (Setiap Bulan)**\n"
+            report += f"  Akumulasi: {int(r['tx'])} Tx | {int(r['items'])} Porsi | Rp {int(r['omzet']):,}\n".replace(",", ".")
+            report += f"  Rata² per Bulan: ⚡ {avg_tx:.1f} Tx | 📦 {avg_porsi:.1f} Porsi | 💰 Rp {int(avg_omzet):,}\n".replace(",", ".")
         
         base_report = report
 
