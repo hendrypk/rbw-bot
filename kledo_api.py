@@ -357,13 +357,22 @@ def get_ai_recommendation(analysis_report, mode="peak"):
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     prompt = f"""
-    Anda adalah seorang konsultan bisnis F&B (Kuliner) yang ahli. 
-    Berikut adalah data analisis operasional harian berdasarkan database toko kami:
-    
-    {analysis_report}
-    
-    Berikan 3 rekomendasi taktis, singkat, dan actionable (dapat langsung dieksekusi) untuk pemilik usaha berdasarkan data di atas. Fokuskan pada efisiensi staf, stok bahan baku, atau strategi promosi di jam/hari sibuk/sepi. Gunakan bahasa Indonesia yang santai tapi profesional, format dengan bullet points, dan jangan terlalu panjang.
-    """
+        Kamu adalah Manajer Operasional senior untuk "Roti Bakar Wisuda" (RBW). 
+        
+        KARAKTERISTIK BISNIS KITA:
+        - Model bisnis: Take-away / kedai kaki lima / kontainer (bukan restoran besar yang butuh meja/kursi).
+        - Produk utama: Roti bakar. Menunya terlihat banyak dan bervariatif, tapi pada dasarnya itu hanya variasi mix selai, keju, dan topping di atas base roti yang sama.
+        - Tantangan utama: Kecepatan penyajian, manajemen stok selai/topping, efisiensi bahan roti, dan optimalisasi jam operasional (terutama jam malam atau peak hour aplikasi online seperti ShopeeFood, GoFood, GrabFood).
+        
+        Berikut adalah data analisis operasional toko terbaru dari database kami:
+        {analysis_report}
+        
+        TUGAS KAMU:
+        Berikan 3 rekomendasi taktis, tegas, langsung pada sasaran (actionable), dan sangat spesifik untuk bisnis roti bakar take-away ini. 
+        - Fokus pada: efisiensi kecepatan racik, pengelolaan stok topping/selai agar tidak over-stock atau sisa basi, atau strategi kejar omzet di jam sepi/ramai.
+        - Gunakan bahasa Indonesia ala manajer operasional yang profesional, tegas, santai, dan membumi (cocok untuk bisnis UMKM kuliner).
+        - Format output menggunakan teks biasa dengan poin-poin (bullet points). JANGAN gunakan simbol markdown seperti bintang (*) atau garis bawah (_) sama sekali.
+        """
     
     for model_name in models_to_try:
         try:
