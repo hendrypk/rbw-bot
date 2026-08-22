@@ -4,6 +4,7 @@ import sqlite3
 import requests
 import logging
 import os
+from google import genai
 import pandas as pd
 from datetime import datetime, timedelta
 from config import API_HOST, X_APP, EMAIL, PASSWORD, KLEDO_COOKIE_NAME, KLEDO_COOKIE_VALUE, GEMINI_API_KEY
@@ -327,6 +328,7 @@ def get_ai_recommendation(analysis_report, mode="peak"):
         return "💡 *Rekomendasi AI:* (API Key Gemini belum disetel di file .env)"
     
     try:
+        # Inisialisasi client Google GenAI secara eksplisit menggunakan API key
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = f"""
@@ -343,6 +345,6 @@ def get_ai_recommendation(analysis_report, mode="peak"):
             contents=prompt,
         )
         
-        return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMRELATION:**\n{response.text}"
+        return f"\n🤖 **AI BUSINESS INSIGHTS & RECOMMENDATION:**\n{response.text}"
     except Exception as e:
         return f"\n⚠️ Gagal memuat rekomendasi AI: {e}"
